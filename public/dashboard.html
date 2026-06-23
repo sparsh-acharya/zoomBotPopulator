@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zoom Bot Platform — Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      /* Dark theme — text tokens read light, surface tokens read dark navy. */
+      --primary:#cc785c; --primary-active:#a9583e; --primary-disabled:#3a3833;
+      --ink:#faf9f5; --body:#cfccc4; --body-strong:#e8e5dd; --muted:#a09d96; --muted-soft:#7c7972;
+      --hairline:#34322e; --hairline-soft:#2a2926;
+      --canvas:#181715; --surface-soft:#1f1e1b; --surface-card:#252320; --surface-cream-strong:#312f2a;
+      --surface-dark:#181715; --surface-dark-soft:#141312;
+      --on-primary:#ffffff; --success:#5db872; --warning:#d4a017; --amber:#e8a55a; --error:#c64545;
+      --serif:'Cormorant Garamond','Tiempos Headline',Garamond,'Times New Roman',serif;
+      --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+      --mono:'JetBrains Mono',ui-monospace,monospace;
+      --r-sm:6px; --r-md:8px; --r-lg:12px; --r-xl:16px; --r-pill:9999px;
+      --control-h:44px;
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--canvas); color:var(--body); font-family:var(--sans); font-size:16px; line-height:1.55; -webkit-font-smoothing:antialiased; }
+
+    /* Top nav */
+    .topnav { height:64px; display:flex; align-items:center; justify-content:space-between; padding:0 32px; border-bottom:1px solid var(--hairline); background:var(--canvas); }
+    .brand { display:flex; align-items:center; gap:10px; font-weight:600; font-size:18px; color:var(--ink); letter-spacing:-0.2px; }
+    .brand .spike { width:18px; height:18px; color:var(--ink); }
+    .topnav nav { display:flex; align-items:center; gap:8px; }
+    .nav-link { font-size:14px; font-weight:500; color:var(--ink); text-decoration:none; padding:8px 14px; border-radius:var(--r-md); }
+    .nav-link:hover { background:var(--surface-card); }
+
+    .wrap { max-width:1200px; margin:0 auto; padding:48px 32px 64px; }
+
+    /* Hero */
+    .hero { margin-bottom:40px; max-width:760px; }
+    .eyebrow { font-size:12px; font-weight:500; letter-spacing:1.5px; text-transform:uppercase; color:var(--muted); }
+    .hero h1 { font-family:var(--serif); font-weight:500; font-size:48px; line-height:1.08; letter-spacing:-0.02em; color:var(--ink); margin:14px 0 12px; }
+    .hero p { font-size:18px; color:var(--body-strong); margin:0; }
+
+    /* Layout */
+    .layout { display:grid; grid-template-columns:minmax(0,420px) minmax(0,1fr); gap:24px; align-items:start; }
+    @media (max-width: 880px) { .layout { grid-template-columns:1fr; } .hero h1 { font-size:36px; } }
+
+    .card { border-radius:var(--r-lg); padding:32px; }
+    .card.form-card { background:var(--surface-card); }
+    .card.active-card { background:transparent; padding:0; }
+
+    .card-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:20px; }
+    .card-head h2 { font-family:var(--serif); font-weight:500; font-size:28px; letter-spacing:-0.01em; color:var(--ink); margin:0; }
+    .count-note { font-size:13px; color:var(--muted); }
+
+    /* Form */
+    form { display:grid; grid-template-columns:repeat(2,1fr); gap:16px; }
+    .full { grid-column:1 / -1; }
+    label { display:flex; flex-direction:column; gap:7px; font-size:13px; font-weight:500; color:var(--muted); }
+    input, select {
+      font-family:var(--sans); font-size:15px; color:var(--ink);
+      background:var(--canvas); border:1px solid var(--hairline); border-radius:var(--r-md);
+      padding:0 13px; height:var(--control-h); width:100%; transition:border-color .12s, box-shadow .12s;
+    }
+    /* Keep every grid slot occupied so the layout never reflows on toggle. */
+    .field-slot { grid-column:auto; min-width:0; }
+    .field-disabled { opacity:0.4; }
+    input:disabled { cursor:not-allowed; }
+    select { appearance:none; background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4' stroke='%23a09d96' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>"); background-repeat:no-repeat; background-position:right 13px center; padding-right:34px; cursor:pointer; }
+    input:focus, select:focus { outline:none; border-color:var(--primary); box-shadow:0 0 0 3px rgba(204,120,92,0.15); }
+    input::placeholder { color:var(--muted-soft); }
+
+    .manual-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+
+    .duration-inputs { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:14px; }
+    .duration-inputs input { width:78px; height:var(--control-h); }
+
+    /* Buttons */
+    .btn-primary {
+      font-family:var(--sans); font-size:14px; font-weight:500; color:var(--on-primary);
+      background:var(--primary); border:0; border-radius:var(--r-md); height:44px; padding:0 22px;
+      cursor:pointer; width:100%; transition:background .12s;
+    }
+    .btn-primary:hover, .btn-primary:active { background:var(--primary-active); }
+    .btn-stop {
+      font-family:var(--sans); font-size:13px; font-weight:500; color:var(--ink);
+      background:var(--canvas); border:1px solid var(--hairline); border-radius:var(--r-md);
+      height:34px; padding:0 16px; cursor:pointer; transition:background .12s;
+    }
+    .btn-stop:hover { background:var(--surface-card); }
+
+    /* Status tabs */
+    .tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:18px; }
+    .tab { display:inline-flex; align-items:center; gap:8px; background:transparent; border:0; cursor:pointer;
+      font-family:var(--sans); font-size:14px; font-weight:500; color:var(--muted); padding:8px 14px; border-radius:var(--r-md); transition:background .12s,color .12s; }
+    .tab:hover { background:var(--surface-card); }
+    .tab.active { background:var(--surface-card); color:var(--ink); }
+    .tab .count { font-size:12px; color:var(--muted); background:var(--surface-cream-strong); border-radius:var(--r-pill); padding:1px 8px; }
+    .tab.active .count { color:var(--ink); }
+
+    /* Active bots */
+    .bots { display:grid; gap:12px; }
+    .bot {
+      display:grid; grid-template-columns:1fr auto; gap:12px; align-items:center;
+      background:var(--canvas); border:1px solid var(--hairline); border-radius:var(--r-lg); padding:18px 20px;
+    }
+    .bot .id { font-size:18px; font-weight:600; color:var(--ink); letter-spacing:-0.01em; }
+    .bot .meta { display:flex; flex-wrap:wrap; gap:8px 16px; font-size:13px; color:var(--muted); margin-top:7px; }
+    .empty { color:var(--muted); font-size:15px; padding:8px 2px; }
+
+    /* Status badges */
+    .badge { display:inline-block; padding:4px 11px; border-radius:var(--r-pill); font-size:11px; font-weight:600; letter-spacing:0.6px; text-transform:uppercase; }
+    .s-joining { background:rgba(212,160,23,0.20); color:#e6c24f; }
+    .s-in-meeting { background:rgba(93,184,114,0.22); color:#7fe0a1; }
+    .s-waiting-room { background:rgba(232,165,90,0.22); color:#f1bd81; }
+    .s-left-timer, .s-left-meeting-ended, .s-left-manual, .s-left-removed { background:var(--surface-cream-strong); color:var(--muted); }
+    .s-error { background:rgba(198,69,69,0.22); color:#ec9595; }
+  </style>
+</head>
+<body>
+  <header class="topnav">
+    <div class="brand">
+      <svg class="spike" viewBox="0 0 100 100" aria-hidden="true">
+        <g stroke="currentColor" stroke-width="9" stroke-linecap="round">
+          <line x1="50" y1="11" x2="50" y2="89" /><line x1="11" y1="50" x2="89" y2="50" />
+          <line x1="22.4" y1="22.4" x2="77.6" y2="77.6" /><line x1="77.6" y1="22.4" x2="22.4" y2="77.6" />
+        </g>
+      </svg>
+      Zoom Bot Platform
+    </div>
+    <nav>
+      <a class="nav-link" href="dashboard.html">Dashboard</a>
+      <a class="nav-link" href="history.html">History</a>
+    </nav>
+  </header>
+
+  <div class="wrap">
+    <section class="hero">
+      <span class="eyebrow">Silent observers</span>
+      <h1>Dispatch bots into your Zoom meetings.</h1>
+      <p>Each bot joins muted and camera-off, attends for as long as you choose, and leaves on its own.</p>
+    </section>
+
+    <div class="layout">
+      <section class="card form-card">
+        <div class="card-head"><h2>Launch</h2></div>
+        <form id="launchForm">
+          <label class="full">Join by
+            <select id="joinMode">
+              <option value="url">Meeting URL</option>
+              <option value="id">Meeting number &amp; passcode</option>
+            </select>
+          </label>
+
+          <div class="full" id="urlGroup">
+            <label>Meeting URL
+              <input id="meetingUrl" type="text" placeholder="https://zoom.us/j/1234567890?pwd=..." />
+            </label>
+          </div>
+
+          <div class="full" id="idGroup">
+            <div class="manual-grid">
+              <label>Meeting number
+                <input id="meetingNumber" type="text" inputmode="numeric" placeholder="123 456 7890" />
+              </label>
+              <label>Passcode (optional)
+                <input id="password" type="text" placeholder="" />
+              </label>
+            </div>
+          </div>
+
+          <label>Leave mode
+            <select id="leaveMode">
+              <option value="timer">Timer — leave after duration</option>
+              <option value="meeting-end">Meeting end — leave when host ends</option>
+            </select>
+          </label>
+          <label id="durationField">Duration
+            <span class="duration-inputs">
+              <input id="durationMinutes" type="number" min="0" value="30" /> min
+              <input id="durationSeconds" type="number" min="0" max="59" value="0" /> sec
+            </span>
+          </label>
+
+          <label>Name mode
+            <select id="nameMode">
+              <option value="random">Random Indian name (allows count)</option>
+              <option value="custom">Custom name (single bot)</option>
+            </select>
+          </label>
+          <div class="field-slot">
+            <label id="countField">Number of bots
+              <input id="count" type="number" min="1" max="10" value="1" />
+            </label>
+            <label id="customNameField">Custom name
+              <input id="customName" type="text" placeholder="e.g. Note Taker" />
+            </label>
+          </div>
+
+          <div class="full">
+            <button type="submit" class="btn-primary">Launch bot</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card active-card">
+        <div class="card-head"><h2>Active bots</h2></div>
+        <div id="tabs" class="tabs"></div>
+        <div id="bots" class="bots"><p class="empty">No active bots.</p></div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const REFRESH_INTERVAL_MS = 3000;
+    const MS_PER_MINUTE = 60 * 1000;
+    const MS_PER_SECOND = 1000;
+
+    const form = document.getElementById('launchForm');
+    const joinModeEl = document.getElementById('joinMode');
+    const urlGroup = document.getElementById('urlGroup');
+    const idGroup = document.getElementById('idGroup');
+    const leaveModeEl = document.getElementById('leaveMode');
+    const durationField = document.getElementById('durationField');
+    const nameModeEl = document.getElementById('nameMode');
+    const countField = document.getElementById('countField');
+    const customNameField = document.getElementById('customNameField');
+    const botsEl = document.getElementById('bots');
+    const tabsEl = document.getElementById('tabs');
+
+    // Join by URL or by meeting number + passcode — only one is ever shown.
+    function toggleJoinMode() {
+      const byUrl = joinModeEl.value === 'url';
+      urlGroup.style.display = byUrl ? 'block' : 'none';
+      idGroup.style.display = byUrl ? 'none' : 'block';
+    }
+    joinModeEl.addEventListener('change', toggleJoinMode);
+    toggleJoinMode();
+
+    // Duration field stays in place (slot never collapses); it is just disabled
+    // in meeting-end mode so the form layout doesn't shift between modes.
+    const durMin = document.getElementById('durationMinutes');
+    const durSec = document.getElementById('durationSeconds');
+    function toggleDuration() {
+      const timer = leaveModeEl.value === 'timer';
+      durationField.classList.toggle('field-disabled', !timer);
+      durMin.disabled = !timer;
+      durSec.disabled = !timer;
+    }
+    leaveModeEl.addEventListener('change', toggleDuration);
+    toggleDuration();
+
+    // Random name → count input; Custom name → custom name. Both live in the
+    // same fixed grid slot, so swapping them does not move anything else.
+    function toggleNameMode() {
+      const custom = nameModeEl.value === 'custom';
+      countField.style.display = custom ? 'none' : 'flex';
+      customNameField.style.display = custom ? 'flex' : 'none';
+    }
+    nameModeEl.addEventListener('change', toggleNameMode);
+    toggleNameMode();
+
+    // T-031: launch bot
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const leaveMode = leaveModeEl.value;
+      const body = { leaveMode };
+
+      // Exactly one join method is used, based on the Join-by selector.
+      if (joinModeEl.value === 'url') {
+        const meetingUrl = document.getElementById('meetingUrl').value.trim();
+        if (!meetingUrl) {
+          alert('Enter a meeting URL.');
+          return;
+        }
+        body.meetingUrl = meetingUrl;
+      } else {
+        const meetingNumber = document.getElementById('meetingNumber').value.replace(/\s/g, '');
+        if (!/^\d+$/.test(meetingNumber)) {
+          alert('Enter a digits-only meeting number.');
+          return;
+        }
+        body.meetingNumber = meetingNumber;
+        body.password = document.getElementById('password').value;
+      }
+      if (leaveMode === 'timer') {
+        const minutes = Number(document.getElementById('durationMinutes').value) || 0;
+        const seconds = Number(document.getElementById('durationSeconds').value) || 0;
+        if (minutes < 0 || seconds < 0) {
+          alert('Duration cannot be negative.');
+          return;
+        }
+        const totalMs = minutes * MS_PER_MINUTE + seconds * MS_PER_SECOND;
+        if (totalMs <= 0) {
+          alert('Duration must be greater than 0 (set minutes and/or seconds).');
+          return;
+        }
+        body.leaveAfterMs = totalMs;
+      }
+
+      // Name mode: random allows a count; custom fires exactly one bot.
+      const nameMode = nameModeEl.value;
+      body.nameMode = nameMode;
+      if (nameMode === 'custom') {
+        const customName = document.getElementById('customName').value.trim();
+        if (!customName) {
+          alert('Enter a custom name, or switch to random name mode.');
+          return;
+        }
+        body.customName = customName;
+      } else {
+        const count = Number(document.getElementById('count').value);
+        if (!Number.isInteger(count) || count < 1 || count > 10) {
+          alert('Number of bots must be between 1 and 10.');
+          return;
+        }
+        body.count = count;
+      }
+
+      try {
+        const res = await fetch('/api/bot/launch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert('Launch failed: ' + (data.error || res.status));
+          return;
+        }
+        const errored = (data.bots || []).filter((b) => b.status === 'error').length;
+        if (errored) alert(`${errored} of ${data.count} bot(s) failed to join — see History for logs.`);
+        await refreshBots();
+      } catch (err) {
+        alert('Launch failed: ' + err.message);
+      }
+    });
+
+    // T-033: stop bot
+    async function stopBot(botId) {
+      try {
+        const res = await fetch(`/api/bot/${encodeURIComponent(botId)}/stop`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) alert('Stop failed: ' + (data.error || res.status));
+      } catch (err) {
+        alert('Stop failed: ' + err.message);
+      }
+      await refreshBots();
+    }
+
+    const TERMINAL = new Set(['left-timer', 'left-meeting-ended', 'left-manual', 'left-removed', 'error']);
+
+    // Status tabs (only active statuses appear on the dashboard).
+    const STATUS_LABELS = { 'in-meeting': 'In meeting', 'waiting-room': 'Waiting room', 'joining': 'Joining' };
+    const STATUS_ORDER = ['in-meeting', 'waiting-room', 'joining'];
+    let currentTab = 'all';
+    let latestBots = [];
+
+    function renderTabs(bots) {
+      const counts = {};
+      for (const b of bots) counts[b.status] = (counts[b.status] || 0) + 1;
+      // If the selected tab has no bots anymore, fall back to All.
+      if (currentTab !== 'all' && !counts[currentTab]) currentTab = 'all';
+
+      const tabs = [{ key: 'all', label: 'All', count: bots.length }];
+      for (const s of STATUS_ORDER) {
+        if (counts[s]) tabs.push({ key: s, label: STATUS_LABELS[s], count: counts[s] });
+      }
+
+      tabsEl.replaceChildren();
+      for (const t of tabs) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'tab' + (t.key === currentTab ? ' active' : '');
+        const lbl = document.createElement('span');
+        lbl.textContent = t.label;
+        const cnt = document.createElement('span');
+        cnt.className = 'count';
+        cnt.textContent = t.count;
+        btn.append(lbl, cnt);
+        btn.addEventListener('click', () => { currentTab = t.key; render(); });
+        tabsEl.appendChild(btn);
+      }
+    }
+
+    function render() {
+      renderTabs(latestBots);
+      const filtered = currentTab === 'all' ? latestBots : latestBots.filter((b) => b.status === currentTab);
+      renderBots(filtered);
+    }
+
+    // T-032 + T-035: render bot cards (built with createElement — no innerHTML
+    // with server/user data, per agents.md §7).
+    function renderBots(bots) {
+      botsEl.replaceChildren();
+      if (!bots.length) {
+        const p = document.createElement('p');
+        p.className = 'empty';
+        p.textContent = 'No active bots.';
+        botsEl.appendChild(p);
+        return;
+      }
+
+      for (const b of bots) {
+        const card = document.createElement('div');
+        card.className = 'bot';
+
+        const left = document.createElement('div');
+        const id = document.createElement('div');
+        id.className = 'id';
+        id.textContent = b.userName || `Bot-${b.botId}`;
+        left.appendChild(id);
+
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+
+        const idTag = document.createElement('span');
+        idTag.textContent = `ID: ${b.botId}`;
+
+        const mn = document.createElement('span');
+        mn.textContent = `Meeting: ${b.meetingNumber}`;
+
+        const started = document.createElement('span');
+        started.textContent = `Started: ${new Date(b.startedAt).toLocaleTimeString()}`;
+
+        const badge = document.createElement('span');
+        badge.className = `badge s-${b.status}`;
+        badge.textContent = b.status;
+
+        meta.append(badge, idTag, mn, started);
+        left.appendChild(meta);
+        card.appendChild(left);
+
+        if (!TERMINAL.has(b.status)) {
+          const btn = document.createElement('button');
+          btn.className = 'btn-stop';
+          btn.textContent = 'Stop';
+          btn.addEventListener('click', () => stopBot(b.botId));
+          card.appendChild(btn);
+        }
+
+        botsEl.appendChild(card);
+      }
+    }
+
+    async function refreshBots() {
+      try {
+        const res = await fetch('/api/bots');
+        latestBots = await res.json();
+        render();
+      } catch (err) {
+        console.error('refreshBots failed:', err);
+      }
+    }
+
+    refreshBots();
+    setInterval(refreshBots, REFRESH_INTERVAL_MS);
+  </script>
+</body>
+</html>

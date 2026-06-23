@@ -1,0 +1,18 @@
+services:
+  zbp:
+    build: .
+    image: zoom-bot-platform
+    container_name: zoom-bot-platform
+    ports:
+      - "${PORT:-3000}:3000"
+    # ZOOM_SDK_KEY / ZOOM_SDK_SECRET come from .env via env_file below.
+    env_file:
+      - .env
+    environment:
+      # PORT inside the container is fixed at 3000 (the host port is mapped above).
+      - PORT=3000
+    # Reap zombie Chromium processes left by Playwright.
+    init: true
+    # Chromium can exhaust the default 64MB /dev/shm; give it room.
+    shm_size: "1gb"
+    restart: unless-stopped

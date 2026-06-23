@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZBP Bot</title>
+  <style>
+    /* The SDK renders a UI we don't need. Keep it off-screen but in the DOM
+       (display:none breaks some SDK media init, so we use off-screen positioning). */
+    #meetingSDKElement {
+      position: absolute;
+      top: -9999px;
+      left: -9999px;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <div id="meetingSDKElement"></div>
+
+  <script type="module">
+    const SDK_URL = 'https://esm.sh/@zoom/meetingsdk@6.1.0/embedded';
+
+    // ── Constants ────────────────────────────────────────────────────────────
+    const SAFETY_CAP_MS = 3 * 60 * 60 * 1000; // always leave after 3h, any mode
+    const CONNECTION_STATE_CLOSED = 'Closed';
+    // Substrings that, when present in a connection-change 'Closed' reason,
+    // indicate the bot was removed by the host (vs. the meeting simply ending).
+    const REMOVED_REASON_HINTS = ['kick', 'expel', 'remov'];
+
+    // ── Status reporting (read by Playwright via window.__BOT_STATUS__) ────────
+    window.__BOT_STATUS__ = 'joining';
+    function setStatus(s) {
+      window.__BOT_STATUS__ = s;
+      console.log(`[Bot] status → ${s}`);
+    }
+
+    let client = null;
+    let hasLeft = false;
+
+    // hasLeft guard (agents.md §8) — prevents double client.leave().
+    async function leave(reason) {
+      if (hasLeft) return;
+      hasLeft = true;
+      try {
+        // Component View uses leaveMeeting() (not leave(), which is Client View).
+        if (client) await client.leaveMeeting();
+      } catch (e) {
+        console.error('[Bot] Leave error:', e?.message || e);
+      }
+      setStatus(reason);
+    }
+    // Exposed so botManager.stopBot() can request a graceful leave.
+    window.__BOT_LEAVE__ = leave;
+
+    async function boot() {
+      const config = window.__BOT_CONFIG__;
+      if (!config) {
+        console.error('[Bot] Missing __BOT_CONFIG__');
+        setStatus('error');
+        return;
+      }
+
+      const { signature, meetingNumber, password, userName, leaveAfterMs } = config;
+
+      // Safety cap timer always runs, regardless of leave mode (agents.md §2.6).
+      setTimeout(() => leave('left-timer'), SAFETY_CAP_MS);
+
+      try {
+        // Dynamic import so a CDN/network failure surfaces as 'error'
+        // rather than silently killing the module before any status is set.
+        const mod = await import(SDK_URL);
+        const ZoomMtgEmbedded = mod.default || mod;
+
+        client = ZoomMtgEmbedded.createClient();
+        const meetingSDKElement = document.getElementById('meetingSDKElement');
+
+        await client.init({
+          zoomAppRoot: meetingSDKElement,
+          language: 'en-US',
+          patchJsMedia: true,
+          leaveOnPageUnload: true,
+        });
+
+        // ── Event handlers (registered before join) ────────────────────────
+        // connection-change 'Closed' is the single authoritative "bot is out"
+        // signal — it covers both the host ending the meeting and the host
+        // removing the bot; payload.reason distinguishes the two.
+        //
+        // We intentionally do NOT listen to 'user-removed': in Component View
+        // it fires for any participant churn (including the bot's own
+        // waiting-room -> meeting transition on admission), so using it to mean
+        // "I was kicked" made the bot leave immediately after being admitted.
+        client.on('connection-change', (payload) => {
+          const reason = String(payload?.reason ?? '');
+          console.log(`[Bot] connection-change: ${payload?.state}${reason ? ' (' + reason + ')' : ''}`);
+          if (payload?.state === CONNECTION_STATE_CLOSED) {
+            const wasRemoved = REMOVED_REASON_HINTS.some((h) => reason.toLowerCase().includes(h));
+            leave(wasRemoved ? 'left-removed' : 'left-meeting-ended');
+          }
+        });
+
+        // sdkKey is intentionally omitted: removed from JoinOptions in v4.0.0
+        // (the app key now travels inside the signature as appKey).
+        await client.join({
+          signature,
+          meetingNumber,
+          password: password || '',
+          userName,
+        });
+
+        console.log('[Bot] Joined session');
+
+        // ── Waiting room / on-hold handling ────────────────────────────────
+        // Component View has no waiting-room event; the local user's isHold
+        // flag reflects it, and changes arrive via 'user-updated'. When held,
+        // report 'waiting-room' and proceed automatically once admitted.
+        let entered = false;
+        async function enterMeeting() {
+          if (entered) return;
+          entered = true;
+
+          // Best-effort mute. A headless bot never connects computer audio, so
+          // it cannot transmit sound regardless; mute(true) only applies when
+          // audio is joined. 'no audio joined' here means the bot is already
+          // silent — the expected state. Video is off by default in Component
+          // View (no programmatic start), so nothing to stop there.
+          try {
+            await client.mute(true);
+            console.log('[Bot] Mic muted, video off (default)');
+          } catch (mediaErr) {
+            console.log('[Bot] Audio not connected — bot is silent (video off):',
+              mediaErr?.reason || mediaErr?.message || mediaErr);
+          }
+
+          setStatus('in-meeting');
+
+          // Leave Mode A: Timer (meeting-end mode handled by connection-change).
+          if (leaveAfterMs !== null && leaveAfterMs !== undefined) {
+            setTimeout(() => leave('left-timer'), leaveAfterMs);
+          }
+        }
+
+        const me = client.getCurrentUser();
+        if (me && me.isHold) {
+          console.log('[Bot] Held in waiting room; awaiting admission');
+          setStatus('waiting-room');
+          client.on('user-updated', () => {
+            if (entered) return; // admission fires user-updated repeatedly
+            const current = client.getCurrentUser();
+            if (current && !current.isHold) {
+              console.log('[Bot] Admitted from waiting room');
+              enterMeeting();
+            }
+          });
+        } else {
+          await enterMeeting();
+        }
+      } catch (err) {
+        console.error('[Bot] Error:', err?.reason || err?.message || err);
+        setStatus('error');
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>

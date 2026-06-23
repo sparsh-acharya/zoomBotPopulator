@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zoom Bot Platform — History</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      /* Dark theme — text tokens read light, surface tokens read dark navy. */
+      --primary:#cc785c; --primary-active:#a9583e;
+      --ink:#faf9f5; --body:#cfccc4; --body-strong:#e8e5dd; --muted:#a09d96; --muted-soft:#7c7972;
+      --hairline:#34322e;
+      --canvas:#181715; --surface-card:#252320; --surface-cream-strong:#312f2a;
+      --surface-dark:#181715; --surface-dark-soft:#141312;
+      --on-dark:#faf9f5; --on-dark-soft:#a09d96;
+      --success:#5db872; --warning:#d4a017; --amber:#e8a55a; --error:#c64545;
+      --serif:'Cormorant Garamond','Tiempos Headline',Garamond,'Times New Roman',serif;
+      --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+      --mono:'JetBrains Mono',ui-monospace,monospace;
+      --r-sm:6px; --r-md:8px; --r-lg:12px; --r-pill:9999px;
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--canvas); color:var(--body); font-family:var(--sans); font-size:16px; line-height:1.55; -webkit-font-smoothing:antialiased; }
+
+    .topnav { height:64px; display:flex; align-items:center; justify-content:space-between; padding:0 32px; border-bottom:1px solid var(--hairline); background:var(--canvas); }
+    .brand { display:flex; align-items:center; gap:10px; font-weight:600; font-size:18px; color:var(--ink); letter-spacing:-0.2px; }
+    .brand .spike { width:18px; height:18px; color:var(--ink); }
+    .topnav nav { display:flex; align-items:center; gap:8px; }
+    .nav-link { font-size:14px; font-weight:500; color:var(--ink); text-decoration:none; padding:8px 14px; border-radius:var(--r-md); }
+    .nav-link:hover { background:var(--surface-card); }
+    .nav-link.active { background:var(--surface-card); }
+
+    .wrap { max-width:1000px; margin:0 auto; padding:48px 32px 64px; }
+    .hero { margin-bottom:32px; }
+    .eyebrow { font-size:12px; font-weight:500; letter-spacing:1.5px; text-transform:uppercase; color:var(--muted); }
+    .hero h1 { font-family:var(--serif); font-weight:500; font-size:44px; line-height:1.08; letter-spacing:-0.02em; color:var(--ink); margin:14px 0 10px; }
+    .hero p { font-size:18px; color:var(--body-strong); margin:0; }
+
+    .toolbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+    .toolbar .eyebrow { color:var(--muted); }
+    .btn-secondary {
+      font-family:var(--sans); font-size:13px; font-weight:500; color:var(--ink);
+      background:var(--canvas); border:1px solid var(--hairline); border-radius:var(--r-md);
+      height:36px; padding:0 16px; cursor:pointer; transition:background .12s;
+    }
+    .btn-secondary:hover { background:var(--surface-card); }
+
+    /* Status tabs */
+    .tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:18px; }
+    .tab { display:inline-flex; align-items:center; gap:8px; background:transparent; border:0; cursor:pointer;
+      font-family:var(--sans); font-size:14px; font-weight:500; color:var(--muted); padding:8px 14px; border-radius:var(--r-md); transition:background .12s,color .12s; }
+    .tab:hover { background:var(--surface-card); }
+    .tab.active { background:var(--surface-card); color:var(--ink); }
+    .tab .count { font-size:12px; color:var(--muted); background:var(--surface-cream-strong); border-radius:var(--r-pill); padding:1px 8px; }
+    .tab.active .count { color:var(--ink); }
+
+    .list { display:grid; gap:14px; }
+
+    /* History card */
+    .bot { background:var(--surface-card); border:1px solid var(--hairline); border-radius:var(--r-lg); overflow:hidden; }
+    .bot > summary { list-style:none; cursor:pointer; padding:20px 24px; display:grid; grid-template-columns:1fr auto; gap:12px; align-items:center; }
+    .bot > summary::-webkit-details-marker { display:none; }
+    .name { font-family:var(--serif); font-weight:500; font-size:26px; letter-spacing:-0.01em; color:var(--ink); }
+    .meta { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:13px; color:var(--muted); margin-top:6px; }
+
+    /* Status badges */
+    .badge { display:inline-block; padding:4px 11px; border-radius:var(--r-pill); font-size:11px; font-weight:600; letter-spacing:0.6px; text-transform:uppercase; white-space:nowrap; }
+    .s-joining { background:rgba(212,160,23,0.20); color:#e6c24f; }
+    .s-in-meeting { background:rgba(93,184,114,0.22); color:#7fe0a1; }
+    .s-waiting-room { background:rgba(232,165,90,0.22); color:#f1bd81; }
+    .s-left-timer, .s-left-meeting-ended, .s-left-manual, .s-left-removed { background:var(--surface-cream-strong); color:var(--muted); }
+    .s-error { background:rgba(198,69,69,0.22); color:#ec9595; }
+
+    /* Logs — dark "code window" surface */
+    .logs {
+      margin:0 16px 16px; padding:16px 18px; background:var(--surface-dark-soft);
+      border-radius:var(--r-md); font-family:var(--mono); font-size:13px; line-height:1.65;
+      max-height:340px; overflow:auto; color:var(--on-dark);
+    }
+    .logline { display:flex; gap:14px; }
+    .logline .t { color:var(--on-dark-soft); white-space:nowrap; }
+    .logline .m { color:var(--on-dark); word-break:break-word; }
+    .empty { color:var(--muted); font-size:15px; padding:8px 2px; }
+  </style>
+</head>
+<body>
+  <header class="topnav">
+    <div class="brand">
+      <svg class="spike" viewBox="0 0 100 100" aria-hidden="true">
+        <g stroke="currentColor" stroke-width="9" stroke-linecap="round">
+          <line x1="50" y1="11" x2="50" y2="89" /><line x1="11" y1="50" x2="89" y2="50" />
+          <line x1="22.4" y1="22.4" x2="77.6" y2="77.6" /><line x1="77.6" y1="22.4" x2="22.4" y2="77.6" />
+        </g>
+      </svg>
+      Zoom Bot Platform
+    </div>
+    <nav>
+      <a class="nav-link" href="dashboard.html">Dashboard</a>
+      <a class="nav-link active" href="history.html">History</a>
+    </nav>
+  </header>
+
+  <div class="wrap">
+    <section class="hero">
+      <span class="eyebrow">Audit trail</span>
+      <h1>Bot history.</h1>
+      <p>Every bot ever launched, with its full log. Expand a card to read the trace.</p>
+    </section>
+
+    <div class="toolbar">
+      <span class="eyebrow">All bots</span>
+      <button id="refreshBtn" type="button" class="btn-secondary">Refresh</button>
+    </div>
+    <div id="tabs" class="tabs"></div>
+    <div id="history" class="list"><p class="empty">Loading…</p></div>
+  </div>
+
+  <script>
+    const REFRESH_INTERVAL_MS = 5000;
+    const historyEl = document.getElementById('history');
+    const tabsEl = document.getElementById('tabs');
+
+    // Status tabs — history can hold every status.
+    const STATUS_LABELS = {
+      'in-meeting': 'In meeting', 'waiting-room': 'Waiting room', 'joining': 'Joining',
+      'left-timer': 'Left · timer', 'left-meeting-ended': 'Meeting ended',
+      'left-manual': 'Stopped', 'left-removed': 'Removed', 'error': 'Error',
+    };
+    const STATUS_ORDER = ['in-meeting', 'waiting-room', 'joining', 'left-timer', 'left-meeting-ended', 'left-manual', 'left-removed', 'error'];
+    let currentTab = 'all';
+    let latestHistory = [];
+
+    function renderTabs(bots) {
+      const counts = {};
+      for (const b of bots) counts[b.status] = (counts[b.status] || 0) + 1;
+      if (currentTab !== 'all' && !counts[currentTab]) currentTab = 'all';
+
+      const tabs = [{ key: 'all', label: 'All', count: bots.length }];
+      for (const s of STATUS_ORDER) {
+        if (counts[s]) tabs.push({ key: s, label: STATUS_LABELS[s], count: counts[s] });
+      }
+
+      tabsEl.replaceChildren();
+      for (const t of tabs) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'tab' + (t.key === currentTab ? ' active' : '');
+        const lbl = document.createElement('span');
+        lbl.textContent = t.label;
+        const cnt = document.createElement('span');
+        cnt.className = 'count';
+        cnt.textContent = t.count;
+        btn.append(lbl, cnt);
+        btn.addEventListener('click', () => { currentTab = t.key; render(); });
+        tabsEl.appendChild(btn);
+      }
+    }
+
+    function render() {
+      renderTabs(latestHistory);
+      const filtered = currentTab === 'all' ? latestHistory : latestHistory.filter((b) => b.status === currentTab);
+      renderHistory(filtered);
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return '—';
+      return new Date(iso).toLocaleString();
+    }
+
+    function fmtDuration(b) {
+      if (!b.startedAt) return '';
+      const end = b.endedAt ? new Date(b.endedAt) : new Date();
+      const secs = Math.max(0, Math.round((end - new Date(b.startedAt)) / 1000));
+      const m = Math.floor(secs / 60), s = secs % 60;
+      return `${m}m ${s}s${b.endedAt ? '' : ' (ongoing)'}`;
+    }
+
+    // Track which cards are open so a refresh doesn't collapse them.
+    const openIds = new Set();
+
+    function renderHistory(bots) {
+      historyEl.replaceChildren();
+      if (!bots.length) {
+        const p = document.createElement('p');
+        p.className = 'empty';
+        p.textContent = 'No bots launched yet.';
+        historyEl.appendChild(p);
+        return;
+      }
+
+      for (const b of bots) {
+        const card = document.createElement('details');
+        card.className = 'bot';
+        if (openIds.has(b.botId)) card.open = true;
+        card.addEventListener('toggle', () => {
+          if (card.open) openIds.add(b.botId); else openIds.delete(b.botId);
+        });
+
+        const summary = document.createElement('summary');
+
+        const left = document.createElement('div');
+        const name = document.createElement('div');
+        name.className = 'name';
+        name.textContent = b.userName || `Bot-${b.botId}`;
+        left.appendChild(name);
+
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        const parts = [
+          `ID: ${b.botId}`,
+          `Meeting: ${b.meetingNumber}`,
+          `Mode: ${b.leaveMode}`,
+          `Started: ${fmtTime(b.startedAt)}`,
+          `Duration: ${fmtDuration(b)}`,
+          `Log lines: ${b.logs ? b.logs.length : 0}`,
+        ];
+        for (const t of parts) {
+          const span = document.createElement('span');
+          span.textContent = t;
+          meta.appendChild(span);
+        }
+        left.appendChild(meta);
+        summary.appendChild(left);
+
+        const badge = document.createElement('span');
+        badge.className = `badge s-${b.status}`;
+        badge.textContent = b.status;
+        summary.appendChild(badge);
+
+        card.appendChild(summary);
+
+        const logs = document.createElement('div');
+        logs.className = 'logs';
+        if (b.logs && b.logs.length) {
+          for (const entry of b.logs) {
+            const line = document.createElement('div');
+            line.className = 'logline';
+            const t = document.createElement('span');
+            t.className = 't';
+            t.textContent = new Date(entry.time).toLocaleTimeString();
+            const m = document.createElement('span');
+            m.className = 'm';
+            m.textContent = entry.message;
+            line.append(t, m);
+            logs.appendChild(line);
+          }
+        } else {
+          const none = document.createElement('div');
+          none.className = 'logline';
+          none.textContent = 'No log entries.';
+          logs.appendChild(none);
+        }
+        card.appendChild(logs);
+
+        historyEl.appendChild(card);
+      }
+    }
+
+    async function refresh() {
+      try {
+        const res = await fetch('/api/bots/history');
+        latestHistory = await res.json();
+        render();
+      } catch (err) {
+        console.error('history refresh failed:', err);
+      }
+    }
+
+    document.getElementById('refreshBtn').addEventListener('click', refresh);
+    refresh();
+    setInterval(refresh, REFRESH_INTERVAL_MS);
+  </script>
+</body>
+</html>
