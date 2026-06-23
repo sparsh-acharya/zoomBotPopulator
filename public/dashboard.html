@@ -98,12 +98,19 @@
     .tab .count { font-size:12px; color:var(--muted); background:var(--surface-cream-strong); border-radius:var(--r-pill); padding:1px 8px; }
     .tab.active .count { color:var(--ink); }
 
+    /* Bulk actions */
+    .bulk-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; padding:0 2px; }
+    .bulk-all { display:inline-flex; align-items:center; gap:8px; font-size:13px; font-weight:500; color:var(--muted); cursor:pointer; }
+    .btn-stop:disabled { opacity:0.45; cursor:not-allowed; }
+    input[type="checkbox"] { width:16px; height:16px; accent-color:var(--primary); cursor:pointer; flex:none; }
+
     /* Active bots */
     .bots { display:grid; gap:12px; }
     .bot {
-      display:grid; grid-template-columns:1fr auto; gap:12px; align-items:center;
+      display:grid; grid-template-columns:auto 1fr auto; gap:14px; align-items:center;
       background:var(--canvas); border:1px solid var(--hairline); border-radius:var(--r-lg); padding:18px 20px;
     }
+    .bot.selected { border-color:var(--primary); }
     .bot .id { font-size:18px; font-weight:600; color:var(--ink); letter-spacing:-0.01em; }
     .bot .meta { display:flex; flex-wrap:wrap; gap:8px 16px; font-size:13px; color:var(--muted); margin-top:7px; }
     .empty { color:var(--muted); font-size:15px; padding:8px 2px; }
@@ -206,6 +213,10 @@
       <section class="card active-card">
         <div class="card-head"><h2>Active bots</h2></div>
         <div id="tabs" class="tabs"></div>
+        <div id="bulkBar" class="bulk-bar" hidden>
+          <label class="bulk-all"><input type="checkbox" id="selectAll" /> Select all</label>
+          <button type="button" id="removeSelected" class="btn-stop" disabled>Remove selected</button>
+        </div>
         <div id="bots" class="bots"><p class="empty">No active bots.</p></div>
       </section>
     </div>
@@ -227,6 +238,14 @@
     const customNameField = document.getElementById('customNameField');
     const botsEl = document.getElementById('bots');
     const tabsEl = document.getElementById('tabs');
+    const bulkBar = document.getElementById('bulkBar');
+    const selectAllEl = document.getElementById('selectAll');
+    const removeSelectedEl = document.getElementById('removeSelected');
+
+    // Bot ids the user has ticked for bulk removal.
+    const selected = new Set();
+    // The bots currently shown (after the active-tab filter) — used by Select all.
+    let currentFiltered = [];
 
     // Join by URL or by meeting number + passcode — only one is ever shown.
     function toggleJoinMode() {
@@ -384,9 +403,23 @@
     }
 
     function render() {
+      // Drop selections for bots that are no longer active.
+      const activeIds = new Set(latestBots.map((b) => b.botId));
+      for (const id of [...selected]) if (!activeIds.has(id)) selected.delete(id);
+
       renderTabs(latestBots);
-      const filtered = currentTab === 'all' ? latestBots : latestBots.filter((b) => b.status === currentTab);
-      renderBots(filtered);
+      currentFiltered = currentTab === 'all' ? latestBots : latestBots.filter((b) => b.status === currentTab);
+      renderBots(currentFiltered);
+      updateBulkBar();
+    }
+
+    function updateBulkBar() {
+      bulkBar.hidden = currentFiltered.length === 0;
+      selectAllEl.checked =
+        currentFiltered.length > 0 && currentFiltered.every((b) => selected.has(b.botId));
+      removeSelectedEl.disabled = selected.size === 0;
+      removeSelectedEl.textContent =
+        selected.size > 0 ? `Remove selected (${selected.size})` : 'Remove selected';
     }
 
     // T-032 + T-035: render bot cards (built with createElement — no innerHTML
@@ -403,7 +436,19 @@
 
       for (const b of bots) {
         const card = document.createElement('div');
-        card.className = 'bot';
+        card.className = 'bot' + (selected.has(b.botId) ? ' selected' : '');
+
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.checked = selected.has(b.botId);
+        check.setAttribute('aria-label', `Select ${b.userName || b.botId}`);
+        check.addEventListener('change', () => {
+          if (check.checked) selected.add(b.botId);
+          else selected.delete(b.botId);
+          card.classList.toggle('selected', check.checked);
+          updateBulkBar();
+        });
+        card.appendChild(check);
 
         const left = document.createElement('div');
         const id = document.createElement('div');
@@ -452,6 +497,30 @@
         console.error('refreshBots failed:', err);
       }
     }
+
+    // Select all toggles selection for every bot in the current view.
+    selectAllEl.addEventListener('change', () => {
+      for (const b of currentFiltered) {
+        if (selectAllEl.checked) selected.add(b.botId);
+        else selected.delete(b.botId);
+      }
+      render();
+    });
+
+    // Remove (stop) every selected bot, then refresh.
+    removeSelectedEl.addEventListener('click', async () => {
+      const ids = [...selected];
+      if (!ids.length) return;
+      if (!confirm(`Remove ${ids.length} bot${ids.length > 1 ? 's' : ''} from their meeting${ids.length > 1 ? 's' : ''}?`)) return;
+      removeSelectedEl.disabled = true;
+      await Promise.all(
+        ids.map((id) =>
+          fetch(`/api/bot/${encodeURIComponent(id)}/stop`, { method: 'POST' }).catch(() => {})
+        )
+      );
+      selected.clear();
+      await refreshBots();
+    });
 
     refreshBots();
     setInterval(refreshBots, REFRESH_INTERVAL_MS);
