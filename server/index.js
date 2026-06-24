@@ -207,7 +207,7 @@ app.get('/api/bots/history', (_req, res) => {
     return res.json(listBotHistory());
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Server] Zoom Bot Platform listening on http://localhost:${PORT}`);
     console.log(`[Server] Dashboard: http://localhost:${PORT}/dashboard.html`);
     console.log(`[Server] Ubuntu VM: http://80.225.245.78:${PORT}/dashboard.html`);
