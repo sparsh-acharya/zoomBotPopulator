@@ -75,6 +75,11 @@
     .duration-inputs { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:14px; }
     .duration-inputs input { width:78px; height:var(--control-h); }
 
+    .ratio-row { display:flex; align-items:center; gap:12px; }
+    .ratio-row input[type="range"] { flex:1; height:6px; accent-color:var(--primary); cursor:pointer; padding:0; }
+    #maleRatioNum { width:64px; height:var(--control-h); flex:none; text-align:center; }
+    #maleRatioVal { font-size:13px; color:var(--body-strong); white-space:nowrap; min-width:150px; text-align:right; }
+
     /* Buttons */
     .btn-primary {
       font-family:var(--sans); font-size:14px; font-weight:500; color:var(--on-primary);
@@ -204,6 +209,14 @@
             </label>
           </div>
 
+          <label class="full" id="maleRatioField">Male / female ratio
+            <div class="ratio-row">
+              <input id="maleRatio" type="range" min="0" max="100" value="50" />
+              <input id="maleRatioNum" type="number" min="0" max="100" value="50" />
+              <span id="maleRatioVal"></span>
+            </div>
+          </label>
+
           <div class="full">
             <button type="submit" class="btn-primary">Launch bot</button>
           </div>
@@ -236,6 +249,10 @@
     const nameModeEl = document.getElementById('nameMode');
     const countField = document.getElementById('countField');
     const customNameField = document.getElementById('customNameField');
+    const maleRatioField = document.getElementById('maleRatioField');
+    const maleRatioEl = document.getElementById('maleRatio');
+    const maleRatioNum = document.getElementById('maleRatioNum');
+    const maleRatioVal = document.getElementById('maleRatioVal');
     const botsEl = document.getElementById('bots');
     const tabsEl = document.getElementById('tabs');
     const bulkBar = document.getElementById('bulkBar');
@@ -269,12 +286,36 @@
     leaveModeEl.addEventListener('change', toggleDuration);
     toggleDuration();
 
-    // Random name → count input; Custom name → custom name. Both live in the
-    // same fixed grid slot, so swapping them does not move anything else.
+    // Male / female ratio for random names — slider and number box stay synced.
+    function setRatio(val, from) {
+      let male = Math.round(Number(val));
+      if (!Number.isFinite(male)) male = 50;
+      male = Math.min(100, Math.max(0, male));
+      if (from !== 'slider') maleRatioEl.value = String(male);
+      if (from !== 'number') maleRatioNum.value = String(male);
+      maleRatioVal.textContent = `${male}% male · ${100 - male}% female`;
+    }
+    maleRatioEl.addEventListener('input', () => setRatio(maleRatioEl.value, 'slider'));
+    // Sync the box live, but only clamp/normalise once the user leaves it so
+    // typing intermediate values isn't fought.
+    maleRatioNum.addEventListener('input', () => {
+      maleRatioEl.value = String(Math.min(100, Math.max(0, Number(maleRatioNum.value) || 0)));
+      const male = Number(maleRatioEl.value);
+      maleRatioVal.textContent = `${male}% male · ${100 - male}% female`;
+    });
+    // On blur, normalise the box (clamp/round) and sync everything.
+    maleRatioNum.addEventListener('change', () => setRatio(maleRatioNum.value));
+    setRatio(50);
+
+    // Random name → count input + ratio slider; Custom name → custom name (the
+    // ratio is meaningless for a single named bot, so it's disabled there).
     function toggleNameMode() {
       const custom = nameModeEl.value === 'custom';
       countField.style.display = custom ? 'none' : 'flex';
       customNameField.style.display = custom ? 'flex' : 'none';
+      maleRatioField.classList.toggle('field-disabled', custom);
+      maleRatioEl.disabled = custom;
+      maleRatioNum.disabled = custom;
     }
     nameModeEl.addEventListener('change', toggleNameMode);
     toggleNameMode();
@@ -334,6 +375,7 @@
           return;
         }
         body.count = count;
+        body.maleRatio = Number(maleRatioEl.value);
       }
 
       try {

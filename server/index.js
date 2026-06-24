@@ -11,7 +11,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 import { generateSignature, ROLE_PARTICIPANT } from './signature.js';
 import { launchBot, stopBot, listActiveBots, listBotHistory, hasBot } from './botManager.js';
-import { randomIndianName } from './names.js';
+import { generateNames } from './names.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -136,11 +136,22 @@ app.post('/api/bot/launch', async (req, res) => {
       }
     }
 
+    // Male ratio (0-100) for random names; defaults to 50.
+    let maleRatio = Number(req.body?.maleRatio);
+    if (!Number.isFinite(maleRatio)) maleRatio = 50;
+
     const botPageUrl = `http://localhost:${PORT}/bot.html`;
+
+    // Pre-compute each bot's name: custom mode reuses the one name; random mode
+    // spreads names across genders by maleRatio.
+    const names =
+      nameMode === 'custom'
+        ? Array.from({ length: count }, () => customName)
+        : generateNames(count, maleRatio);
 
     // Fire all bots concurrently with the same config; each gets its own id,
     // name, and signature. launchBot resolves (never rejects) per bot.
-    const launches = Array.from({ length: count }, () => {
+    const launches = names.map((userName) => {
       const botId = uuidv4().slice(0, BOT_ID_LENGTH);
       const signature = generateSignature(
         ZOOM_SDK_KEY,
@@ -154,7 +165,7 @@ app.post('/api/bot/launch', async (req, res) => {
         sdkKey: ZOOM_SDK_KEY,
         meetingNumber,
         password,
-        userName: nameMode === 'custom' ? customName : randomIndianName(),
+        userName,
         leaveAfterMs,
         botPageUrl,
       });
