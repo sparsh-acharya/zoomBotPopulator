@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZBP Presenter Bot</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+
+    /* The video the bot screen-shares. It fills the viewport so that when the
+       SDK shares "Entire screen" (the headless/Xvfb viewport), the captured
+       pixels ARE this video. */
+    #clip {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      object-fit: contain;
+      background: #000;
+      z-index: 1;
+    }
+
+    /* The SDK toolbar must render so the bot can click "Share", but nobody
+       watches it — push it off-screen. Never display:none (breaks SDK media). */
+    #meetingSDKElement {
+      position: absolute;
+      top: 0;
+      left: -99999px;
+      width: 1280px;
+      height: 720px;
+      overflow: hidden;
+      z-index: 0;
+    }
+  </style>
+</head>
+<body>
+  <video id="clip" autoplay playsinline></video>
+  <div id="meetingSDKElement"></div>
+
+  <script type="module">
+    const SDK_URL = 'https://esm.sh/@zoom/meetingsdk@6.1.0/embedded';
+
+    // ── Force tab capture WITH audio ───────────────────────────────────────────
+    // The Meeting SDK calls getDisplayMedia() WITHOUT preferCurrentTab, so
+    // Chromium shows the general picker — which EXCLUDES the calling tab, leaving
+    // an empty tab list the headless bot can't act on, and auto-selecting the
+    // entire screen carries no audio. The Web SDK only transmits shared audio
+    // when the captured surface is a *tab*. So we patch getDisplayMedia (before
+    // the SDK loads) to force preferCurrentTab + audio: combined with Chromium's
+    // --auto-accept-this-tab-capture flag this auto-grants capture of THIS tab
+    // (the fullscreen clip) including its audio — no picker, no second tab.
+    // preferCurrentTab forbids surface hints (displaySurface/systemAudio/etc.),
+    // so we pass a clean constraint set rather than forwarding the SDK's.
+    if (navigator.mediaDevices?.getDisplayMedia) {
+      const realGetDisplayMedia =
+        navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getDisplayMedia = () => {
+        console.log('[HostBot] getDisplayMedia → forcing preferCurrentTab + tab audio');
+        return realGetDisplayMedia({ video: true, audio: true, preferCurrentTab: true });
+      };
+    }
+
+    // ── Constants ────────────────────────────────────────────────────────────
+    const SAFETY_CAP_MS = 3 * 60 * 60 * 1000; // always leave after 3h, any mode
+    const CONNECTION_STATE_CLOSED = 'Closed';
+    // Screen-share auto-start (UI-driven — Component View has no startShareScreen
+    // API). The Share control can render before sharing actually works, so we
+    // re-click periodically until the SDK reports we're sharing.
+    const SHARE_START_TIMEOUT_MS = 30_000;
+    const SHARE_POLL_INTERVAL_MS = 500;
+    const SHARE_CLICK_RETRY_MS = 3_000;
+    const SHARE_BUTTON_RE = /share screen|share content|\bshare\b/i;
+    // Once the clip finishes, end the presentation after a short tail.
+    const END_TAIL_MS = 2_000;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const REMOVED_REASON_HINTS = ['kick', 'expel', 'remov'];
+
+    // ── Tab-title lock ─────────────────────────────────────────────────────────
+    // The screen share carries audio ONLY when Zoom captures a Chromium *tab*,
+    // and the bot makes Chromium auto-select that tab by matching this exact
+    // title (--auto-select-tab-capture-source-by-title in botManager.js). The
+    // Zoom SDK renames document.title to the meeting topic after joining, which
+    // would break the title match → Zoom can't auto-pick the tab → share (and
+    // its audio) fails. Pin the title so tab selection stays deterministic.
+    const FIXED_TITLE = 'ZBP Presenter Bot'; // must match SCREEN_SHARE_TITLE
+    function lockTitle() {
+      if (document.title !== FIXED_TITLE) document.title = FIXED_TITLE;
+    }
+    const titleEl = document.querySelector('title');
+    if (titleEl) {
+      new MutationObserver(lockTitle).observe(titleEl, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+    }
+    setInterval(lockTitle, 1000);
+
+    // ── Status reporting (read by Playwright via window.__BOT_STATUS__) ────────
+    window.__BOT_STATUS__ = 'joining';
+    function setStatus(s) {
+      window.__BOT_STATUS__ = s;
+      console.log(`[HostBot] status → ${s}`);
+    }
+
+    let client = null;
+    let hasLeft = false;
+
+    async function leave(reason) {
+      if (hasLeft) return;
+      hasLeft = true;
+      try {
+        // The presenter bot IS the host, so END the meeting for everyone.
+        // endMeeting() closes the room; leaveMeeting() would only drop the bot
+        // and Zoom would hand host to a random remaining participant.
+        if (client) await client.endMeeting();
+      } catch (e) {
+        // Fall back to a plain leave if ending isn't permitted for some reason.
+        console.error('[HostBot] endMeeting failed, leaving instead:', e?.message || e);
+        try { if (client) await client.leaveMeeting(); } catch (_) {}
+      }
+      setStatus(reason);
+    }
+    window.__BOT_LEAVE__ = leave;
+
+    function clickableLabel(el) {
+      return [
+        el.getAttribute('aria-label') || '',
+        el.textContent || '',
+        el.getAttribute('title') || '',
+        el.className || '',
+      ].join(' ');
+    }
+
+    function findClickable(scope, matchers) {
+      const els = scope.querySelectorAll('button, [role="button"]');
+      for (const el of els) {
+        const label = clickableLabel(el);
+        if (matchers.some((m) => m.test(label))) return el;
+      }
+      return null;
+    }
+
+    function dumpButtons(scope, tag) {
+      const items = [...scope.querySelectorAll('button, [role="button"]')].map((el) => ({
+        a: (el.getAttribute('aria-label') || '').trim(),
+        t: (el.getAttribute('title') || '').trim(),
+        c: (el.className || '').toString().slice(0, 60),
+      }));
+      console.log(`[HostBot] clickables ${tag} (${items.length}):`, JSON.stringify(items));
+    }
+
+    // True when the SDK reports this user is sharing. The exact flag name has
+    // varied across SDK versions, so check the known candidates defensively.
+    function isSharing() {
+      const me = client.getCurrentUser?.();
+      if (!me) return false;
+      return Boolean(me.bShareScreen || me.sharerOn || me.isSharing);
+    }
+
+    // Start screen sharing by driving the SDK's Share button (no public API).
+    // getDisplayMedia is auto-answered by Chromium flags with the whole screen,
+    // which is showing the fullscreen <video>, so the share content is the clip.
+    async function startScreenShare() {
+      const root = document.getElementById('meetingSDKElement');
+      const deadline = Date.now() + SHARE_START_TIMEOUT_MS;
+      let everClicked = false;
+      let nextClickAt = 0;
+
+      while (Date.now() < deadline) {
+        if (isSharing()) break;
+        if (Date.now() >= nextClickAt) {
+          let btn = findClickable(root, [SHARE_BUTTON_RE]);
+          // Some layouts hide Share under a "More" overflow menu.
+          if (!btn) {
+            const more = findClickable(root, [/^\s*more\s*$/i]);
+            if (more) { more.click(); await sleep(600); }
+            btn = findClickable(root, [SHARE_BUTTON_RE]) || findClickable(document.body, [SHARE_BUTTON_RE]);
+          }
+          if (btn) {
+            btn.click();
+            everClicked = true;
+            await sleep(600);
+            // A confirm/share button may appear in a dialog appended to body.
+            const confirm = findClickable(document.body, [/^\s*share\s*$/i]);
+            if (confirm && confirm !== btn) confirm.click();
+          }
+          nextClickAt = Date.now() + SHARE_CLICK_RETRY_MS;
+        }
+        await sleep(SHARE_POLL_INTERVAL_MS);
+      }
+
+      if (isSharing()) {
+        console.log('[HostBot] Screen share started');
+        return true;
+      }
+      if (!everClicked) dumpButtons(root, 'toolbar');
+      console.log('[HostBot] Could not confirm screen share started (best-effort)');
+      return false;
+    }
+
+    async function startPresentation(videoUrl, endBehavior) {
+      const video = document.getElementById('clip');
+      // What to do when the clip finishes:
+      //   loop → replay forever (a leaveAfterMs timer ends the meeting)
+      //   hold → freeze on the last frame until the leaveAfterMs timer fires
+      //   end  → end the meeting now
+      if (endBehavior === 'loop') {
+        video.loop = true;
+        console.log('[HostBot] Clip set to loop until duration');
+      } else {
+        video.addEventListener('ended', () => {
+          if (endBehavior === 'end') {
+            console.log('[HostBot] Clip ended — ending meeting');
+            setTimeout(() => leave('left-meeting-ended'), END_TAIL_MS);
+          } else {
+            console.log('[HostBot] Clip ended — holding until duration');
+          }
+        });
+      }
+      if (videoUrl) {
+        video.src = videoUrl;
+        try {
+          await video.play();
+        } catch (e) {
+          console.warn('[HostBot] Autoplay blocked:', e?.message || e);
+        }
+      } else {
+        console.warn('[HostBot] No videoUrl provided — nothing to present');
+      }
+      await startScreenShare();
+    }
+
+    async function boot() {
+      const config = window.__BOT_CONFIG__;
+      if (!config) {
+        console.error('[HostBot] Missing __BOT_CONFIG__');
+        setStatus('error');
+        return;
+      }
+
+      const { signature, meetingNumber, password, userName, leaveAfterMs, zak, videoUrl, endBehavior } = config;
+
+      console.log(
+        `[HostBot] crossOriginIsolated=${self.crossOriginIsolated} SAB=${typeof SharedArrayBuffer !== 'undefined'}`
+      );
+
+      // Safety cap timer always runs.
+      setTimeout(() => leave('left-timer'), SAFETY_CAP_MS);
+
+      try {
+        const mod = await import(SDK_URL);
+        const ZoomMtgEmbedded = mod.default || mod;
+
+        client = ZoomMtgEmbedded.createClient();
+        const meetingSDKElement = document.getElementById('meetingSDKElement');
+
+        await client.init({
+          zoomAppRoot: meetingSDKElement,
+          language: 'en-US',
+          patchJsMedia: true,
+          leaveOnPageUnload: true,
+        });
+
+        client.on('connection-change', (payload) => {
+          const reason = String(payload?.reason ?? '');
+          console.log(`[HostBot] connection-change: ${payload?.state}${reason ? ' (' + reason + ')' : ''}`);
+          if (payload?.state === CONNECTION_STATE_CLOSED) {
+            const wasRemoved = REMOVED_REASON_HINTS.some((h) => reason.toLowerCase().includes(h));
+            leave(wasRemoved ? 'left-removed' : 'left-meeting-ended');
+          }
+        });
+
+        // role-1 signature + the host's ZAK is what STARTS (not just joins) the
+        // meeting. Without zak this would fail to start a not-yet-started meeting.
+        await client.join({
+          signature,
+          meetingNumber,
+          password: password || '',
+          userName,
+          zak: zak || '',
+        });
+
+        console.log('[HostBot] Meeting started/joined as host');
+        setStatus('in-meeting');
+
+        if (leaveAfterMs !== null && leaveAfterMs !== undefined) {
+          setTimeout(() => leave('left-timer'), leaveAfterMs);
+        }
+
+        // Kick off the presentation (play clip + share) in the background so the
+        // join status is reported promptly.
+        startPresentation(videoUrl, endBehavior || 'loop');
+      } catch (err) {
+        console.error('[HostBot] Error:', err?.reason || err?.message || err);
+        setStatus('error');
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>

@@ -5,16 +5,95 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import multer from 'multer';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 
-import { generateSignature, ROLE_PARTICIPANT } from './signature.js';
-import { launchBot, stopBot, listActiveBots, listBotHistory, hasBot } from './botManager.js';
+import { generateSignature, ROLE_PARTICIPANT, ROLE_HOST } from './signature.js';
+import { launchBot, stopBot, listActiveBots, listBotHistory, hasBot, getBotStatus } from './botManager.js';
 import { generateNames } from './names.js';
+import {
+  getAuthorizeUrl,
+  exchangeCode,
+  isConnected,
+  getMe,
+  getZak,
+  createMeeting,
+} from './zoomApi.js';
+import {
+  onFire,
+  onRemove,
+  setBotStatusResolver,
+  schedule,
+  listJobs,
+  getJob,
+  cancel as cancelJob,
+  remove as removeJob,
+} from './scheduler.js';
+import { startTunnel } from './tunnel.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+// ── Uploaded-video cleanup helpers ────────────────────────────────────────────
+// Resolve a stored videoUrl (/uploads/<name>) to an absolute path, guarding
+// against path traversal by keeping only the basename.
+function uploadPathFromUrl(videoUrl) {
+    if (!videoUrl) return null;
+    return path.join(UPLOADS_DIR, path.basename(videoUrl));
+}
+
+// Best-effort delete; ENOENT (already gone) is fine and stays quiet.
+function deleteUploadFile(filePath) {
+    if (!filePath) return;
+    fs.promises.unlink(filePath).catch((err) => {
+        if (err.code !== 'ENOENT') console.error(`[Uploads] delete failed ${filePath}: ${err.message}`);
+    });
+}
+
+// Remove a just-uploaded file when the request fails before a job owns it.
+function cleanupOrphan(req) {
+    if (req.file?.path) deleteUploadFile(req.file.path);
+}
+
+// On startup, delete every uploaded file: schedules live only in memory, so any
+// file on disk after a restart is unreferenced. Also passed a set of names to
+// keep (empty at boot) for future-proofing if persistence is added.
+function sweepUploads(keep = new Set()) {
+    let names;
+    try {
+        names = fs.readdirSync(UPLOADS_DIR);
+    } catch {
+        return;
+    }
+    let removed = 0;
+    for (const name of names) {
+        if (keep.has(name)) continue;
+        deleteUploadFile(path.join(UPLOADS_DIR, name));
+        removed += 1;
+    }
+    if (removed) console.log(`[Uploads] Swept ${removed} orphaned file(s) on startup`);
+}
+
+// ── Video upload (multer, disk storage) ───────────────────────────────────────
+const ALLOWED_VIDEO_EXT = new Set(['.mp4', '.webm', '.ogg', '.mov', '.m4v']);
+const MAX_VIDEO_BYTES = 500 * 1024 * 1024; // 500 MB
+const uploadStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, `${uuidv4()}${ALLOWED_VIDEO_EXT.has(ext) ? ext : '.mp4'}`);
+  },
+});
+const uploadVideo = multer({
+  storage: uploadStorage,
+  limits: { fileSize: MAX_VIDEO_BYTES },
+  fileFilter: (_req, file, cb) => cb(null, ALLOWED_VIDEO_EXT.has(path.extname(file.originalname).toLowerCase())),
+}).single('video');
 
 const PORT = process.env.PORT || 3000;
 const ZOOM_SDK_KEY = process.env.ZOOM_SDK_KEY;
@@ -22,6 +101,9 @@ const ZOOM_SDK_SECRET = process.env.ZOOM_SDK_SECRET;
 
 const DIGITS_ONLY = /^\d+$/;
 const BOT_ID_LENGTH = 8;
+// What a presenter bot does once the clip finishes (chosen per schedule):
+// loop = replay until duration; hold = freeze until duration; end = leave now.
+const END_BEHAVIORS = new Set(['loop', 'hold', 'end']);
 // Each bot is a separate headless Chromium (~200-500MB RAM), so cap how many
 // a single launch request may spawn.
 const MAX_BOTS_PER_REQUEST = 10;
@@ -62,18 +144,25 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Cross-origin isolation for the bot page ONLY. The Zoom Web SDK's audio
+// Cross-origin isolation for the bot pages ONLY. The Zoom Web SDK's audio
 // encoder/decoder runs in a worker backed by SharedArrayBuffer, which the
 // browser only exposes when the page is crossOriginIsolated. Without these
 // headers, connecting computer audio fails with `OPERATION_TIMEOUT` (errorCode 1).
 // COEP `credentialless` lets us still load the SDK from the esm.sh CDN without
-// requiring it to send CORP headers. Scoped to /bot.html so the dashboard's
+// requiring it to send CORP headers. Scoped to the bot pages so the dashboard's
 // cross-origin assets (Google Fonts, etc.) keep working.
-app.get('/bot.html', (_req, res, next) => {
-    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-    res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+const ISOLATED_PAGES = new Set(['/bot.html', '/host-bot.html']);
+app.use((req, res, next) => {
+    if (ISOLATED_PAGES.has(req.path)) {
+        res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+        res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+    }
     next();
 });
+
+// Uploaded presentation videos. Same-origin with the host-bot page, so they
+// load fine under COEP credentialless without extra CORP headers.
+app.use('/uploads', express.static(UPLOADS_DIR));
 
 app.use(express.static(PUBLIC_DIR));
 
@@ -221,8 +310,188 @@ app.get('/api/bots/history', (_req, res) => {
     return res.json(listBotHistory());
 });
 
-app.listen(PORT, '0.0.0.0', () => {
+// ── Zoom OAuth (connect the current user) ─────────────────────────────────────
+// /oauth/start sends the operator to Zoom's consent screen; Zoom redirects back
+// to /oauth/callback with a code we exchange for tokens (stored in zoomApi).
+app.get('/oauth/start', (_req, res) => {
+    try {
+        return res.redirect(getAuthorizeUrl());
+    } catch (err) {
+        return res.status(500).send(`OAuth not configured: ${err.message}`);
+    }
+});
+
+app.get('/oauth/callback', async (req, res) => {
+    const code = req.query.code;
+    if (!code) return res.status(400).send('Missing authorization code');
+    try {
+        await exchangeCode(String(code));
+        return res.redirect('/schedule.html?connected=1');
+    } catch (err) {
+        console.error('[Server] /oauth/callback error:', err.message);
+        return res.status(500).send(`OAuth failed: ${err.message}`);
+    }
+});
+
+// Connection status for the schedule page ("connected as ...").
+app.get('/api/zoom/status', async (_req, res) => {
+    if (!isConnected()) return res.json({ connected: false });
+    try {
+        return res.json({ connected: true, user: await getMe() });
+    } catch {
+        return res.json({ connected: true, user: null });
+    }
+});
+
+// Upload constraints, so the UI can validate a file before sending it.
+app.get('/api/config', (_req, res) => {
+    return res.json({
+        maxVideoBytes: MAX_VIDEO_BYTES,
+        allowedExtensions: [...ALLOWED_VIDEO_EXT],
+    });
+});
+
+// ── POST /api/schedule ────────────────────────────────────────────────────────
+// multipart: a video file + { topic, startTime, durationMinutes }. Creates a
+// Zoom meeting owned by the connected user and arms a job to start it on time.
+app.post('/api/schedule', (req, res) => {
+    uploadVideo(req, res, async (uploadErr) => {
+        if (uploadErr) {
+            return res.status(400).json({ error: `Upload failed: ${uploadErr.message}` });
+        }
+        try {
+            if (!isConnected()) {
+                cleanupOrphan(req);
+                return res.status(401).json({ error: 'Connect your Zoom account first' });
+            }
+            if (!req.file) {
+                return res.status(400).json({ error: 'A video file is required (mp4/webm/mov)' });
+            }
+            const topic = String(req.body?.topic ?? '').trim() || 'Scheduled presentation';
+            const when = new Date(String(req.body?.startTime ?? ''));
+            if (Number.isNaN(when.getTime())) {
+                cleanupOrphan(req);
+                return res.status(400).json({ error: 'Invalid start time' });
+            }
+            const durationMinutes = Number(req.body?.durationMinutes);
+            if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
+                cleanupOrphan(req);
+                return res.status(400).json({ error: 'durationMinutes must be a positive number' });
+            }
+            // How the bot behaves once the clip finishes: loop/hold until the
+            // duration elapses, or end the meeting immediately.
+            const endBehavior = END_BEHAVIORS.has(req.body?.endBehavior) ? req.body.endBehavior : 'loop';
+
+            const meeting = await createMeeting({
+                topic,
+                startTime: when.toISOString(),
+                durationMinutes,
+            });
+
+            const job = schedule({
+                topic,
+                startTime: when.toISOString(),
+                durationMinutes,
+                endBehavior,
+                videoUrl: `/uploads/${req.file.filename}`,
+                meetingNumber: meeting.meetingNumber,
+                password: meeting.password,
+                joinUrl: meeting.joinUrl,
+            });
+
+            return res.json(job);
+        } catch (err) {
+            // e.g. createMeeting threw — the file is now an orphan, so remove it.
+            cleanupOrphan(req);
+            console.error('[Server] /api/schedule error:', err.message);
+            return res.status(500).json({ error: err.message });
+        }
+    });
+});
+
+app.get('/api/schedule', (_req, res) => res.json(listJobs()));
+
+app.post('/api/schedule/:id/cancel', (req, res) => {
+    const ok = cancelJob(req.params.id);
+    if (!ok) return res.status(400).json({ error: 'Job not found or no longer cancelable' });
+    return res.json({ success: true });
+});
+
+// End a running presentation now: stop the bot (host leaving ends the meeting)
+// and drop the job. Also works on a still-scheduled job (cancels it).
+app.post('/api/schedule/:id/end', async (req, res) => {
+    const job = getJob(req.params.id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    try {
+        if (job.botId && hasBot(job.botId)) {
+            await stopBot(job.botId);
+        }
+        removeJob(job.id);
+        return res.json({ success: true });
+    } catch (err) {
+        console.error('[Server] /api/schedule/:id/end error:', err.message);
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// When a scheduled job's time arrives: fetch a fresh ZAK, build a host-role
+// signature, and launch the presenter bot to START the meeting and play the
+// video. Errors are recorded on the job by the scheduler.
+// Lets the scheduler prune a running job once its bot has left/ended.
+setBotStatusResolver(getBotStatus);
+
+// Delete a job's uploaded video whenever the job leaves the store (ended,
+// canceled, or pruned after the meeting finished).
+onRemove((job) => deleteUploadFile(uploadPathFromUrl(job.videoUrl)));
+
+onFire(async (job) => {
+    const zak = await getZak();
+    const botId = uuidv4().slice(0, BOT_ID_LENGTH);
+    const signature = generateSignature(ZOOM_SDK_KEY, ZOOM_SDK_SECRET, job.meetingNumber, ROLE_HOST);
+    // 'end' lets the clip's own end event close the meeting; loop/hold keep it
+    // open for the full scheduled duration.
+    const leaveAfterMs = job.endBehavior === 'end' ? null : job.durationMinutes * 60 * 1000;
+    const result = await launchBot({
+        botId,
+        signature,
+        sdkKey: ZOOM_SDK_KEY,
+        meetingNumber: job.meetingNumber,
+        password: job.password,
+        userName: 'Presenter',
+        leaveAfterMs,
+        botPageUrl: `http://localhost:${PORT}/host-bot.html`,
+        zak,
+        videoUrl: job.videoUrl,
+        endBehavior: job.endBehavior,
+        screenShare: true,
+    });
+    job.botId = botId;
+    if (result.status === 'error') {
+        job.status = 'error';
+        job.error = 'Bot failed to start the meeting';
+    } else {
+        job.status = 'running';
+    }
+});
+
+// Schedules don't survive a restart, so any leftover upload is unreferenced.
+sweepUploads();
+
+app.listen(PORT, '0.0.0.0', async () => {
+    const tunnelUrl = await startTunnel(PORT);
+    if (tunnelUrl) {
+        console.log(`[Server] Public tunnel: ${tunnelUrl}`);
+        console.log(`[Server] OAuth callback: ${tunnelUrl}/oauth/callback`);
+    }
+
     console.log(`[Server] Zoom Bot Platform listening on http://localhost:${PORT}`);
+    console.log(`---------------------------------------------------------------`);
+    console.log(`------------------------DashBoard------------------------------`);
+    console.log(`---------------------------------------------------------------`);
     console.log(`[Server] Dashboard: http://localhost:${PORT}/dashboard.html`);
     console.log(`[Server] Ubuntu VM: http://80.225.245.78:${PORT}/dashboard.html`);
+
+    // Open the ngrok tunnel in-process so `npm start` is all that's needed for
+    // Zoom OAuth to reach /oauth/callback. No-op unless NGROK_DOMAIN is set.
+
 });

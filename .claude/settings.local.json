@@ -7,7 +7,10 @@
       "WebFetch(domain:github.com)",
       "Bash(cp /c/Users/Sparsh/AppData/Local/Temp/claude/c--SPARSH-QR-zoom-sdk-bot/3fd553f3-d9db-4af4-b4d4-28f725b20b1a/scratchpad/coi-check.mjs \"/c/SPARSH/QR/zoom_sdk_bot/__coi-check.mjs\")",
       "Bash(powershell.exe -NoProfile -Command 'Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; $env:NODE_NO_WARNINGS=1; Start-Process node -ArgumentList '\\\\''server/index.js'\\\\'' -WorkingDirectory '\\\\''c:\\\\SPARSH\\\\QR\\\\zoom_sdk_bot'\\\\'' -WindowStyle Hidden; Start-Sleep -Seconds 3; try { \\(Invoke-WebRequest '\\\\''http://localhost:3000/bot.html'\\\\'' -UseBasicParsing\\).StatusCode } catch { '\\\\''SERVER ERR: '\\\\'' + $_.Exception.Message }')",
-      "Bash(node __coi-check.mjs)"
+      "Bash(node __coi-check.mjs)",
+      "WebFetch(domain:www.recall.ai)",
+      "Bash(curl -sL https://raw.githubusercontent.com/zoom/meetingsdk-web/master/embedded.d.ts -o /tmp/emb.d.ts)",
+      "Read(//tmp/**)"
     ]
   }
 }

@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zoom Bot Platform — Schedule a presentation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --primary:#cc785c; --primary-active:#a9583e;
+      --ink:#faf9f5; --body:#cfccc4; --body-strong:#e8e5dd; --muted:#a09d96; --muted-soft:#7c7972;
+      --hairline:#34322e;
+      --canvas:#181715; --surface-card:#252320; --surface-cream-strong:#312f2a;
+      --on-primary:#ffffff; --success:#5db872; --warning:#d4a017; --amber:#e8a55a; --error:#c64545;
+      --serif:'Cormorant Garamond',Garamond,'Times New Roman',serif;
+      --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+      --mono:'JetBrains Mono',ui-monospace,monospace;
+      --r-md:8px; --r-lg:12px; --r-pill:9999px; --control-h:44px;
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--canvas); color:var(--body); font-family:var(--sans); font-size:16px; line-height:1.55; -webkit-font-smoothing:antialiased; }
+
+    .topnav { height:64px; display:flex; align-items:center; justify-content:space-between; padding:0 32px; border-bottom:1px solid var(--hairline); }
+    .brand { display:flex; align-items:center; gap:10px; font-weight:600; font-size:18px; color:var(--ink); letter-spacing:-0.2px; }
+    .brand .spike { width:18px; height:18px; color:var(--ink); }
+    .topnav nav { display:flex; align-items:center; gap:8px; }
+    .nav-link { font-size:14px; font-weight:500; color:var(--ink); text-decoration:none; padding:8px 14px; border-radius:var(--r-md); }
+    .nav-link:hover, .nav-link.active { background:var(--surface-card); }
+
+    .wrap { max-width:1100px; margin:0 auto; padding:48px 32px 64px; }
+    .hero { margin-bottom:28px; max-width:760px; }
+    .eyebrow { font-size:12px; font-weight:500; letter-spacing:1.5px; text-transform:uppercase; color:var(--muted); }
+    .hero h1 { font-family:var(--serif); font-weight:500; font-size:44px; line-height:1.08; letter-spacing:-0.02em; color:var(--ink); margin:14px 0 12px; }
+    .hero p { font-size:18px; color:var(--body-strong); margin:0; }
+
+    /* Connection banner */
+    .conn { display:flex; align-items:center; justify-content:space-between; gap:16px; background:var(--surface-card); border:1px solid var(--hairline); border-radius:var(--r-lg); padding:16px 20px; margin-bottom:24px; }
+    .conn .state { font-size:14px; }
+    .conn .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:8px; vertical-align:middle; }
+    .dot.on { background:var(--success); } .dot.off { background:var(--muted-soft); }
+
+    .layout { display:grid; grid-template-columns:minmax(0,440px) minmax(0,1fr); gap:24px; align-items:start; }
+    @media (max-width: 880px) { .layout { grid-template-columns:1fr; } .hero h1 { font-size:34px; } }
+
+    .card { border-radius:var(--r-lg); padding:28px; }
+    .card.form-card { background:var(--surface-card); }
+    .card-head h2 { font-family:var(--serif); font-weight:500; font-size:26px; color:var(--ink); margin:0 0 18px; }
+
+    form { display:grid; gap:16px; }
+    label { display:flex; flex-direction:column; gap:7px; font-size:13px; font-weight:500; color:var(--muted); }
+    input, button { font-family:var(--sans); }
+    input[type="text"], input[type="number"], input[type="datetime-local"], select {
+      font-size:15px; color:var(--ink); background:var(--canvas); border:1px solid var(--hairline);
+      border-radius:var(--r-md); padding:0 13px; height:var(--control-h); width:100%;
+    }
+    select { appearance:none; cursor:pointer; background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4' stroke='%23a09d96' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>"); background-repeat:no-repeat; background-position:right 13px center; padding-right:34px; }
+    input[type="file"] { font-size:14px; color:var(--body); background:var(--canvas); border:1px dashed var(--hairline); border-radius:var(--r-md); padding:12px; width:100%; }
+    .file-info { font-size:13px; margin-top:-6px; display:flex; align-items:center; gap:7px; }
+    .file-info.ok { color:var(--success); }
+    .file-info.bad { color:#ec9595; }
+    .file-info .icon { font-weight:700; }
+    input:focus, select:focus { outline:none; border-color:var(--primary); box-shadow:0 0 0 3px rgba(204,120,92,0.15); }
+    .row2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+
+    .btn-primary { font-size:14px; font-weight:500; color:var(--on-primary); background:var(--primary); border:0; border-radius:var(--r-md); height:44px; padding:0 22px; cursor:pointer; width:100%; }
+    .btn-primary:hover { background:var(--primary-active); }
+    .btn-primary:disabled { opacity:0.5; cursor:not-allowed; }
+    .btn-ghost { font-size:13px; font-weight:500; color:var(--ink); background:var(--canvas); border:1px solid var(--hairline); border-radius:var(--r-md); height:38px; padding:0 16px; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; }
+    .btn-ghost:hover { background:var(--surface-card); }
+    .btn-danger { font-size:13px; font-weight:500; color:#ec9595; background:var(--canvas); border:1px solid rgba(198,69,69,0.5); border-radius:var(--r-md); height:38px; padding:0 16px; cursor:pointer; }
+    .btn-danger:hover { background:rgba(198,69,69,0.15); }
+
+    .jobs { display:grid; gap:14px; }
+    .job { background:var(--surface-card); border:1px solid var(--hairline); border-radius:var(--r-lg); padding:20px 22px; }
+    .job .top { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+    .job .title { font-size:18px; font-weight:600; color:var(--ink); line-height:1.3; }
+    .job .meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:14px 18px; margin-top:16px; }
+    .job .field { display:flex; flex-direction:column; gap:3px; min-width:0; }
+    .job .field .k { font-size:10.5px; font-weight:600; letter-spacing:0.6px; text-transform:uppercase; color:var(--muted-soft); }
+    .job .field .v { font-size:14px; color:var(--body-strong); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .job .actions { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:18px; padding-top:16px; border-top:1px solid var(--hairline); }
+    .link-pill { display:inline-flex; align-items:center; gap:7px; font-size:13px; font-weight:500; color:var(--amber); text-decoration:none; border:1px solid rgba(232,165,90,0.4); border-radius:var(--r-md); height:36px; padding:0 14px; }
+    .link-pill:hover { background:rgba(232,165,90,0.12); }
+    .link-pill svg { width:14px; height:14px; }
+    .empty { color:var(--muted); font-size:15px; }
+    .err { color:#ec9595; font-size:13px; margin-top:12px; background:rgba(198,69,69,0.10); border:1px solid rgba(198,69,69,0.3); border-radius:var(--r-md); padding:8px 12px; }
+
+    .badge { display:inline-block; padding:4px 11px; border-radius:var(--r-pill); font-size:11px; font-weight:600; letter-spacing:0.6px; text-transform:uppercase; }
+    .s-scheduled { background:rgba(212,160,23,0.20); color:#e6c24f; }
+    .s-starting { background:rgba(232,165,90,0.22); color:#f1bd81; }
+    .s-running { background:rgba(93,184,114,0.22); color:#7fe0a1; }
+    .s-done, .s-canceled { background:var(--surface-cream-strong); color:var(--muted); }
+    .s-error { background:rgba(198,69,69,0.22); color:#ec9595; }
+  </style>
+</head>
+<body>
+  <header class="topnav">
+    <div class="brand">
+      <svg class="spike" viewBox="0 0 100 100" aria-hidden="true">
+        <g stroke="currentColor" stroke-width="9" stroke-linecap="round">
+          <line x1="50" y1="11" x2="50" y2="89" /><line x1="11" y1="50" x2="89" y2="50" />
+          <line x1="22.4" y1="22.4" x2="77.6" y2="77.6" /><line x1="77.6" y1="22.4" x2="22.4" y2="77.6" />
+        </g>
+      </svg>
+      Zoom Bot Platform
+    </div>
+    <nav>
+      <a class="nav-link" href="dashboard.html">Dashboard</a>
+      <a class="nav-link active" href="schedule.html">Schedule</a>
+      <a class="nav-link" href="history.html">History</a>
+    </nav>
+  </header>
+
+  <div class="wrap">
+    <section class="hero">
+      <span class="eyebrow">Presenter bot</span>
+      <h1>Schedule a meeting with a video.</h1>
+      <p>At the time you pick, a bot starts the meeting on your Zoom account and screen-shares your video for everyone who joins.</p>
+    </section>
+
+    <div class="conn" id="conn">
+      <div class="state"><span class="dot off"></span><span id="connText">Checking Zoom connection…</span></div>
+      <a class="btn-ghost" id="connectBtn" href="/oauth/start" hidden>Connect Zoom</a>
+    </div>
+
+    <div class="layout">
+      <section class="card form-card">
+        <div class="card-head"><h2>New presentation</h2></div>
+        <form id="scheduleForm">
+          <label>Meeting topic
+            <input id="topic" type="text" placeholder="Quarterly update" />
+          </label>
+          <div class="row2">
+            <label>Start time
+              <input id="startTime" type="datetime-local" />
+            </label>
+            <label>Duration (min)
+              <input id="durationMinutes" type="number" min="1" value="30" />
+            </label>
+          </div>
+          <label>When the video ends
+            <select id="endBehavior">
+              <option value="loop">Loop until the duration ends</option>
+              <option value="hold">Play once, hold until the duration ends</option>
+              <option value="end">End the meeting immediately</option>
+            </select>
+          </label>
+          <label id="videoLabel">Video file (mp4 / webm / mov)
+            <input id="video" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.mov,.m4v" />
+          </label>
+          <div id="fileInfo" class="file-info" hidden></div>
+          <button type="submit" class="btn-primary" id="submitBtn">Schedule presentation</button>
+        </form>
+      </section>
+
+      <section class="card" style="padding:0;">
+        <div class="card-head"><h2>Scheduled</h2></div>
+        <div id="jobs" class="jobs"><p class="empty">Nothing scheduled yet.</p></div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const REFRESH_INTERVAL_MS = 4000;
+    const connText = document.getElementById('connText');
+    const connDot = document.querySelector('#conn .dot');
+    const connectBtn = document.getElementById('connectBtn');
+    const form = document.getElementById('scheduleForm');
+    const submitBtn = document.getElementById('submitBtn');
+    const jobsEl = document.getElementById('jobs');
+    const videoEl = document.getElementById('video');
+    const videoLabel = document.getElementById('videoLabel');
+    const fileInfoEl = document.getElementById('fileInfo');
+
+    let connected = false;
+    // Upload limits, fetched from the server so the UI matches it exactly.
+    let maxVideoBytes = 500 * 1024 * 1024;
+    let allowedExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.m4v'];
+    let fileOk = true; // false when a selected file is invalid
+
+    function formatBytes(n) {
+      if (n >= 1024 * 1024 * 1024) return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+      if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+      if (n >= 1024) return (n / 1024).toFixed(0) + ' KB';
+      return n + ' B';
+    }
+
+    async function loadConfig() {
+      try {
+        const cfg = await (await fetch('/api/config')).json();
+        if (cfg.maxVideoBytes) maxVideoBytes = cfg.maxVideoBytes;
+        if (Array.isArray(cfg.allowedExtensions)) allowedExtensions = cfg.allowedExtensions;
+      } catch { /* keep defaults */ }
+      videoLabel.firstChild.textContent =
+        `Video file (${allowedExtensions.map((e) => e.replace('.', '')).join(' / ')}, ≤ ${formatBytes(maxVideoBytes)}) `;
+    }
+
+    // Validate the picked file and reflect it in the indicator + submit button.
+    function checkFile() {
+      const file = videoEl.files[0];
+      if (!file) {
+        fileOk = true;
+        fileInfoEl.hidden = true;
+        updateSubmitState();
+        return;
+      }
+      const dot = file.name.lastIndexOf('.');
+      const ext = dot >= 0 ? file.name.slice(dot).toLowerCase() : '';
+      fileInfoEl.hidden = false;
+      if (!allowedExtensions.includes(ext)) {
+        fileOk = false;
+        fileInfoEl.className = 'file-info bad';
+        fileInfoEl.textContent = `✕ Unsupported type "${ext || 'unknown'}" — allowed: ${allowedExtensions.join(', ')}`;
+      } else if (file.size > maxVideoBytes) {
+        fileOk = false;
+        fileInfoEl.className = 'file-info bad';
+        fileInfoEl.textContent = `✕ ${file.name} is ${formatBytes(file.size)} — exceeds the ${formatBytes(maxVideoBytes)} limit`;
+      } else {
+        fileOk = true;
+        fileInfoEl.className = 'file-info ok';
+        fileInfoEl.textContent = `✓ ${file.name} · ${formatBytes(file.size)}`;
+      }
+      updateSubmitState();
+    }
+
+    function updateSubmitState() {
+      submitBtn.disabled = !connected || !fileOk;
+    }
+
+    videoEl.addEventListener('change', checkFile);
+
+    async function checkConnection() {
+      try {
+        const res = await fetch('/api/zoom/status');
+        const data = await res.json();
+        connected = !!data.connected;
+        if (connected) {
+          const who = data.user ? (data.user.displayName || data.user.email || 'your account') : 'your account';
+          connText.textContent = `Connected as ${who}`;
+          connDot.className = 'dot on';
+          connectBtn.hidden = true;
+        } else {
+          connText.textContent = 'Not connected — connect your Zoom account to schedule.';
+          connDot.className = 'dot off';
+          connectBtn.hidden = false;
+        }
+      } catch {
+        connText.textContent = 'Could not reach the server.';
+      }
+      updateSubmitState();
+    }
+
+    function badge(status) {
+      const b = document.createElement('span');
+      b.className = `badge s-${status}`;
+      b.textContent = status;
+      return b;
+    }
+
+    // A labelled key/value cell for the job card meta grid.
+    function field(label, value) {
+      const wrap = document.createElement('div');
+      wrap.className = 'field';
+      const k = document.createElement('span');
+      k.className = 'k';
+      k.textContent = label;
+      const v = document.createElement('span');
+      v.className = 'v';
+      v.textContent = value;
+      v.title = value;
+      wrap.append(k, v);
+      return wrap;
+    }
+
+    function renderJobs(jobs) {
+      jobsEl.replaceChildren();
+      if (!jobs.length) {
+        const p = document.createElement('p');
+        p.className = 'empty';
+        p.textContent = 'Nothing scheduled yet.';
+        jobsEl.appendChild(p);
+        return;
+      }
+      for (const j of jobs) {
+        const card = document.createElement('div');
+        card.className = 'job';
+
+        const top = document.createElement('div');
+        top.className = 'top';
+        const title = document.createElement('div');
+        title.className = 'title';
+        title.textContent = j.topic;
+        top.append(title, badge(j.status));
+        card.appendChild(top);
+
+        const END_LABELS = { loop: 'Loops till end', hold: 'Holds till end', end: 'Ends with clip' };
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        meta.append(
+          field('Starts', new Date(j.startTime).toLocaleString()),
+          field('Duration', `${j.durationMinutes} min`),
+          field('Meeting ID', j.meetingNumber),
+          field('On clip end', END_LABELS[j.endBehavior] || j.endBehavior || '—'),
+        );
+        card.appendChild(meta);
+
+        if (j.error) {
+          const e = document.createElement('div');
+          e.className = 'err';
+          e.textContent = j.error;
+          card.appendChild(e);
+        }
+
+        // Footer: join link on the left, the primary action on the right.
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+
+        const left = document.createElement('div');
+        if (j.joinUrl) {
+          const link = document.createElement('a');
+          link.className = 'link-pill';
+          link.href = j.joinUrl;
+          link.target = '_blank';
+          link.rel = 'noopener';
+          link.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
+          link.append(document.createTextNode('Join link'));
+          left.appendChild(link);
+        }
+        actions.appendChild(left);
+
+        if (j.status === 'scheduled') {
+          const cancel = document.createElement('button');
+          cancel.className = 'btn-ghost';
+          cancel.textContent = 'Cancel';
+          cancel.addEventListener('click', () => cancelJob(j.id));
+          actions.appendChild(cancel);
+        } else if (j.status === 'running' || j.status === 'starting') {
+          const end = document.createElement('button');
+          end.className = 'btn-danger';
+          end.textContent = 'End meeting';
+          end.addEventListener('click', () => endJob(j.id));
+          actions.appendChild(end);
+        }
+        card.appendChild(actions);
+
+        jobsEl.appendChild(card);
+      }
+    }
+
+    async function loadJobs() {
+      try {
+        const res = await fetch('/api/schedule');
+        renderJobs(await res.json());
+      } catch (err) {
+        console.error('loadJobs failed:', err);
+      }
+    }
+
+    async function cancelJob(id) {
+      if (!confirm('Cancel this scheduled presentation?')) return;
+      await fetch(`/api/schedule/${encodeURIComponent(id)}/cancel`, { method: 'POST' }).catch(() => {});
+      await loadJobs();
+    }
+
+    async function endJob(id) {
+      if (!confirm('End this meeting now for everyone?')) return;
+      await fetch(`/api/schedule/${encodeURIComponent(id)}/end`, { method: 'POST' }).catch(() => {});
+      await loadJobs();
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!connected) { alert('Connect your Zoom account first.'); return; }
+      const startTime = document.getElementById('startTime').value;
+      const file = videoEl.files[0];
+      if (!startTime) { alert('Pick a start time.'); return; }
+      if (!file) { alert('Choose a video file.'); return; }
+      if (!fileOk) { alert('That video can’t be used — see the message under the file picker.'); return; }
+
+      const fd = new FormData();
+      fd.append('topic', document.getElementById('topic').value.trim());
+      fd.append('startTime', startTime);
+      fd.append('durationMinutes', document.getElementById('durationMinutes').value || '30');
+      fd.append('endBehavior', document.getElementById('endBehavior').value);
+      fd.append('video', file);
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Uploading…';
+      try {
+        const res = await fetch('/api/schedule', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok) { alert('Schedule failed: ' + (data.error || res.status)); }
+        else { form.reset(); document.getElementById('durationMinutes').value = '30'; checkFile(); }
+      } catch (err) {
+        alert('Schedule failed: ' + err.message);
+      } finally {
+        submitBtn.textContent = 'Schedule presentation';
+        updateSubmitState();
+        await loadJobs();
+      }
+    });
+
+    loadConfig();
+    checkConnection();
+    loadJobs();
+    setInterval(() => { checkConnection(); loadJobs(); }, REFRESH_INTERVAL_MS);
+  </script>
+</body>
+</html>

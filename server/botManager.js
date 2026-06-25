@@ -18,13 +18,53 @@ const JOIN_HARD_CAP_MS = 180_000;
 const STATUS_POLL_INTERVAL_MS = 2_000;
 const MAX_LOG_ENTRIES = 500; // cap per-bot log so memory stays bounded
 
-const CHROMIUM_ARGS = [
+const CORE_ARGS = [
   '--no-sandbox',
   '--disable-setuid-sandbox',
   '--disable-dev-shm-usage',
-  '--use-fake-ui-for-media-stream', // grants mic/camera permission silently
-  '--use-fake-device-for-media-stream', // virtual device so the SDK doesn't error
 ];
+// --use-fake-ui-for-media-stream auto-answers media prompts, but for
+// getDisplayMedia it silently auto-picks the ENTIRE SCREEN (no picker, no
+// audio) and overrides our tab-by-title selection — so presenter bots must NOT
+// use it (it's why every share logged handleDesktopCapture). Attendee bots
+// still need it. Media *permissions* are granted at the Playwright context
+// level (newContext({ permissions })), so dropping the flag doesn't reintroduce
+// a permission prompt; it just lets getDisplayMedia resolve via the tab flags.
+const BASE_ARGS = [...CORE_ARGS, '--use-fake-ui-for-media-stream'];
+// A fake camera/mic device so the SDK doesn't error when probing devices.
+// NOTE: this flag ALSO replaces getDisplayMedia output with a green test
+// pattern, so presenter bots must NOT use it (they screen-capture for real).
+const FAKE_DEVICE_ARG = '--use-fake-device-for-media-stream';
+const CHROMIUM_ARGS = [...BASE_ARGS, FAKE_DEVICE_ARG];
+
+// Extra flags for a screen-sharing (presenter) bot. The Meeting SDK has no
+// public API to start a share, so the bot clicks the SDK's "Share" button,
+// which calls getDisplayMedia(). We MUST capture a Chromium TAB, not a window
+// or the whole screen: the Meeting SDK only transmits shared audio when the
+// captured surface is a browser tab ("share tab audio") — window/entire-screen
+// shares carry no audio at all. Since the bot's own tab is fullscreen on the
+// clip (--kiosk), capturing this tab gives both the video AND its sound.
+//   --auto-select-tab-capture-source-by-title picks our tab in the picker
+//   --auto-accept-this-tab-capture auto-grants the current-tab capture
+// We deliberately DO NOT pass --auto-select-desktop-capture-source: that flag
+// forces an (audio-less) screen capture and short-circuits tab selection, which
+// is exactly why audio was missing. Same result on Windows and Xvfb on the VM.
+const SCREEN_SHARE_TITLE = 'ZBP Presenter Bot'; // must match host-bot.html <title>
+const SCREEN_SHARE_ARGS = [
+  '--autoplay-policy=no-user-gesture-required',
+  '--kiosk',
+  '--start-fullscreen',
+  '--window-position=0,0',
+  `--auto-select-tab-capture-source-by-title=${SCREEN_SHARE_TITLE}`,
+  '--auto-accept-this-tab-capture',
+  '--enable-usermedia-screen-capturing',
+];
+
+// A presenter bot must actually render to a display for getDisplayMedia to have
+// pixels to capture. Old headless Chromium can't screen-capture, so presenter
+// bots run headed (on a server, wrap the process in `xvfb-run`). Toggle with
+// HOST_BOT_HEADLESS=true only if your Chromium build supports headless capture.
+const PRESENTER_HEADLESS = process.env.HOST_BOT_HEADLESS === 'true';
 
 const MEDIA_PERMISSIONS = ['microphone', 'camera'];
 
@@ -56,7 +96,10 @@ const bots = new Map();
  * @param {string} config.password
  * @param {string} config.userName
  * @param {number|null} config.leaveAfterMs - null = meeting-end mode
- * @param {string} config.botPageUrl - absolute http(s) URL to bot.html
+ * @param {string} config.botPageUrl - absolute http(s) URL to the bot page
+ * @param {string} [config.zak] - host ZAK token; required to START a meeting
+ * @param {string} [config.videoUrl] - server URL of the video to screen-share
+ * @param {boolean} [config.screenShare] - presenter bot: play video as a share
  * @returns {Promise<{ botId: string, status: string }>}
  */
 export async function launchBot(config) {
@@ -69,6 +112,10 @@ export async function launchBot(config) {
     userName,
     leaveAfterMs,
     botPageUrl,
+    zak = '',
+    videoUrl = '',
+    screenShare = false,
+    endBehavior = 'loop',
   } = config;
 
   // Create the history record up front so even early failures are recorded.
@@ -90,10 +137,22 @@ export async function launchBot(config) {
 
   let browser;
   try {
-    browser = await chromium.launch({ headless: HEADLESS, args: CHROMIUM_ARGS });
+    const headless = screenShare ? PRESENTER_HEADLESS : HEADLESS;
+    // Presenter bots omit the fake device (it would feed a green test pattern
+    // into the share) AND --use-fake-ui-for-media-stream (it auto-picks the
+    // entire screen for getDisplayMedia, killing tab selection + audio). They
+    // use CORE_ARGS + the screen-capture flags so getDisplayMedia resolves to
+    // the bot's tab via --auto-select-tab-capture-source-by-title.
+    const args = screenShare ? [...CORE_ARGS, ...SCREEN_SHARE_ARGS] : CHROMIUM_ARGS;
+    browser = await chromium.launch({ headless, args });
     record.browser = browser;
 
-    const context = await browser.newContext({ permissions: MEDIA_PERMISSIONS });
+    const context = await browser.newContext({
+      permissions: MEDIA_PERMISSIONS,
+      // viewport:null lets the page fill the (kiosk-fullscreen) window so the
+      // video covers the whole display — key to a clean "entire screen" capture.
+      ...(screenShare ? { viewport: null } : {}),
+    });
     const page = await context.newPage();
     record.page = page;
 
@@ -112,7 +171,7 @@ export async function launchBot(config) {
       (cfg) => {
         window.__BOT_CONFIG__ = cfg;
       },
-      { signature, sdkKey, meetingNumber, password, userName, leaveAfterMs }
+      { signature, sdkKey, meetingNumber, password, userName, leaveAfterMs, zak, videoUrl, screenShare, endBehavior }
     );
 
     await page.goto(botPageUrl, { waitUntil: 'domcontentloaded' });
@@ -259,6 +318,11 @@ export function listBotHistory() {
 /** True if a bot with this id exists. */
 export function hasBot(botId) {
   return bots.has(botId);
+}
+
+/** Current status of a bot, or null if unknown. Used to prune finished jobs. */
+export function getBotStatus(botId) {
+  return bots.get(botId)?.status ?? null;
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
