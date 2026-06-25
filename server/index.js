@@ -61,6 +61,20 @@ if (!ZOOM_SDK_KEY || !ZOOM_SDK_SECRET) {
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Cross-origin isolation for the bot page ONLY. The Zoom Web SDK's audio
+// encoder/decoder runs in a worker backed by SharedArrayBuffer, which the
+// browser only exposes when the page is crossOriginIsolated. Without these
+// headers, connecting computer audio fails with `OPERATION_TIMEOUT` (errorCode 1).
+// COEP `credentialless` lets us still load the SDK from the esm.sh CDN without
+// requiring it to send CORP headers. Scoped to /bot.html so the dashboard's
+// cross-origin assets (Google Fonts, etc.) keep working.
+app.get('/bot.html', (_req, res, next) => {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+    next();
+});
+
 app.use(express.static(PUBLIC_DIR));
 
 // ── POST /api/signature ───────────────────────────────────────────────────────

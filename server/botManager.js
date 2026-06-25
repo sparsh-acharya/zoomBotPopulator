@@ -7,7 +7,14 @@ import { chromium } from 'playwright';
 
 // ── Constants (no magic numbers) ──────────────────────────────────────────────
 const HEADLESS = true;
-const JOIN_TIMEOUT_MS = 30_000;
+// How long /launch blocks waiting for a bot to leave 'joining' before it returns
+// to the HTTP caller. Hitting this is NOT a failure — the join may simply be slow
+// (cloud VM → Zoom media servers can take 60s+); the background watcher keeps
+// going and flips the bot to 'in-meeting' when it lands.
+const JOIN_WAIT_MS = 90_000;
+// Hard cap: if a bot is STILL 'joining' after this long, treat it as dead and
+// close its browser. Generous because real joins have been observed at 60-70s.
+const JOIN_HARD_CAP_MS = 180_000;
 const STATUS_POLL_INTERVAL_MS = 2_000;
 const MAX_LOG_ENTRIES = 500; // cap per-bot log so memory stays bounded
 
@@ -110,20 +117,30 @@ export async function launchBot(config) {
 
     await page.goto(botPageUrl, { waitUntil: 'domcontentloaded' });
 
-    // Wait for the bot to either join, be held, or fail.
-    await page.waitForFunction(
-      () =>
-        window.__BOT_STATUS__ === 'in-meeting' ||
-        window.__BOT_STATUS__ === 'error' ||
-        window.__BOT_STATUS__ === 'waiting-room',
-      undefined,
-      { timeout: JOIN_TIMEOUT_MS }
-    );
-
-    setStatus(record, await readStatus(page));
-
-    // Begin background lifecycle watching (do not await — runs until terminal).
+    // Start watching from the very start. The watcher owns the browser lifecycle
+    // from here on — including reaping a bot that never gets past 'joining' (see
+    // JOIN_HARD_CAP_MS). This is what makes a slow-but-successful join survive:
+    // we never close the browser just because the initial wait below elapsed.
     watchBotStatus(botId, page, browser);
+
+    // Wait (NON-FATALLY) for the bot to leave 'joining'. A timeout here does not
+    // mean failure: joins from a cloud VM to Zoom's media servers have been seen
+    // to take 60s+, and racing a fixed timeout used to kill bots that were about
+    // to join. If we time out, we just return 'joining' and let the watcher
+    // report 'in-meeting' once it lands.
+    try {
+      await page.waitForFunction(
+        () => window.__BOT_STATUS__ !== 'joining',
+        undefined,
+        { timeout: JOIN_WAIT_MS }
+      );
+      setStatus(record, await readStatus(page));
+    } catch (waitErr) {
+      addLog(
+        record,
+        `Still joining after ${JOIN_WAIT_MS}ms — continuing in background (not an error)`
+      );
+    }
 
     return { botId, status: record.status };
   } catch (err) {
@@ -163,6 +180,20 @@ export function watchBotStatus(botId, page, browser) {
 
     if (status && status !== record.status) {
       setStatus(record, status);
+    }
+
+    // Reap a bot that never gets past 'joining'. 'waiting-room' is intentionally
+    // exempt (admission is legitimately open-ended; the page's own safety cap
+    // covers it). Only a stuck join is treated as dead here.
+    if (
+      record.status === 'joining' &&
+      Date.now() - new Date(record.startedAt).getTime() > JOIN_HARD_CAP_MS
+    ) {
+      clearInterval(interval);
+      addLog(record, `Join hard cap (${JOIN_HARD_CAP_MS}ms) exceeded; giving up`);
+      setStatus(record, 'error');
+      await closeBrowserSafely(record, browser);
+      return;
     }
 
     if (isTerminal(record.status)) {

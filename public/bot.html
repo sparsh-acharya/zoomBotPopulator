@@ -5,14 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ZBP Bot</title>
   <style>
-    /* The SDK renders a UI we don't need. Keep it off-screen but in the DOM
-       (display:none breaks some SDK media init, so we use off-screen positioning). */
+    /* The SDK toolbar must actually render so we can click "Join Audio", but the
+       bot is headless and nobody sees it — so render at a usable size pushed
+       off-screen. Never display:none (that breaks SDK media init). */
     #meetingSDKElement {
       position: absolute;
-      top: -9999px;
-      left: -9999px;
-      width: 1px;
-      height: 1px;
+      top: 0;
+      left: -99999px;
+      width: 1024px;
+      height: 768px;
       overflow: hidden;
     }
   </style>
@@ -26,6 +27,19 @@
     // ── Constants ────────────────────────────────────────────────────────────
     const SAFETY_CAP_MS = 3 * 60 * 60 * 1000; // always leave after 3h, any mode
     const CONNECTION_STATE_CLOSED = 'Closed';
+    // Audio auto-join (UI-driven — Component View has no startAudio API).
+    // The SDK audio module can take 20s+ to come up after join, and the toolbar
+    // "Join Audio" button may exist before it actually works — so give a generous
+    // window and re-click periodically (not just once) until audio truly connects.
+    const AUDIO_JOIN_TIMEOUT_MS = 45_000;
+    const AUDIO_POLL_INTERVAL_MS = 500;
+    const AUDIO_CLICK_RETRY_MS = 3_000; // re-click Join Audio this often until connected
+    // Keep re-asserting mute until the SDK confirms it (handles the connect/mute
+    // race that otherwise leaves bots broadcasting the fake-device tone).
+    const MUTE_CONFIRM_TIMEOUT_MS = 15_000;
+    const MUTE_RETRY_INTERVAL_MS = 600;
+    const AUDIO_JOIN_BUTTON_RE = /join audio|computer audio|join by computer/i;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // Substrings that, when present in a connection-change 'Closed' reason,
     // indicate the bot was removed by the host (vs. the meeting simply ending).
     const REMOVED_REASON_HINTS = ['kick', 'expel', 'remov'];
@@ -55,6 +69,119 @@
     // Exposed so botManager.stopBot() can request a graceful leave.
     window.__BOT_LEAVE__ = leave;
 
+    // A clickable's searchable text: aria-label + text + title + class.
+    function clickableLabel(el) {
+      return [
+        el.getAttribute('aria-label') || '',
+        el.textContent || '',
+        el.getAttribute('title') || '',
+        el.className || '',
+      ].join(' ');
+    }
+
+    // Find a clickable (button or role=button) whose label matches any matcher.
+    function findClickable(scope, matchers) {
+      const els = scope.querySelectorAll('button, [role="button"]');
+      for (const el of els) {
+        const label = clickableLabel(el);
+        if (matchers.some((m) => m.test(label))) return el;
+      }
+      return null;
+    }
+
+    // Rich dump of every clickable so we can pin the audio selector from a run.
+    function dumpButtons(scope, tag) {
+      const items = [...scope.querySelectorAll('button, [role="button"]')].map((el) => ({
+        a: (el.getAttribute('aria-label') || '').trim(),
+        t: (el.getAttribute('title') || '').trim(),
+        c: (el.className || '').toString().slice(0, 60),
+      }));
+      console.log(`[Bot] clickables ${tag} (${items.length}):`, JSON.stringify(items));
+    }
+
+    // Component View has no startAudio API — connect computer audio by clicking
+    // the rendered "Join Audio" control, then mute. Best-effort: on failure the
+    // bot stays silent (no mic) but still attends.
+    async function connectAudio() {
+      const root = document.getElementById('meetingSDKElement');
+      const deadline = Date.now() + AUDIO_JOIN_TIMEOUT_MS;
+      // Match by aria-label / text / title / class.
+      const audioMatchers = [
+        AUDIO_JOIN_BUTTON_RE, /\baudio\b/i, /unmute|\bmute\b/i, /microphone|\bmic\b/i, /voip/i,
+      ];
+      const isConnected = () => client.getCurrentUser()?.audio === 'computer';
+
+      async function tryClick(scope) {
+        const el = findClickable(scope, audioMatchers);
+        if (!el) return false;
+        el.click();
+        await sleep(400);
+        // Some flows open a "Join Audio by Computer" popup appended to body.
+        const popup = findClickable(document.body, [AUDIO_JOIN_BUTTON_RE]);
+        if (popup && popup !== el) popup.click();
+        return true;
+      }
+
+      // Keep re-clicking a Join Audio control until audio actually connects.
+      // A single early click is unreliable: the button can render before the
+      // audio module is ready, so that click is a no-op and audio never joins.
+      // We poll the connection every AUDIO_POLL_INTERVAL_MS but only re-click
+      // every AUDIO_CLICK_RETRY_MS (clicking only while not yet connected, so we
+      // never toggle the mute button that replaces it once audio is up).
+      let everClicked = false;
+      let nextClickAt = 0;
+      while (Date.now() < deadline) {
+        if (isConnected()) break;
+        if (Date.now() >= nextClickAt) {
+          if (await tryClick(root)) {
+            everClicked = true;
+          } else {
+            // Fallback: the mic control may be under the "More" overflow menu.
+            const more = findClickable(root, [/^\s*more\s*$/i]);
+            if (more) {
+              more.click();
+              await sleep(700);
+              if (await tryClick(document.body)) everClicked = true;
+            }
+          }
+          nextClickAt = Date.now() + AUDIO_CLICK_RETRY_MS;
+        }
+        await sleep(AUDIO_POLL_INTERVAL_MS);
+      }
+
+      if (!isConnected()) {
+        if (!everClicked) {
+          dumpButtons(root, 'toolbar');
+          dumpButtons(document.body, 'body');
+          console.log('[Bot] Could not find a Join Audio control — staying silent (no mic)');
+        } else {
+          console.log('[Bot] Audio did not connect in time — staying silent (no mic)');
+        }
+        return false;
+      }
+
+      // 3. Mute, and KEEP retrying until the SDK confirms muted. Under heavy load
+      // (e.g. 10 concurrent bots) audio connects a beat after a single mute()
+      // call, so one mute can miss and the bot broadcasts the fake-device tone.
+      const muteDeadline = Date.now() + MUTE_CONFIRM_TIMEOUT_MS;
+      let muted = false;
+      while (Date.now() < muteDeadline) {
+        if (client.getCurrentUser()?.muted === true) { muted = true; break; }
+        try {
+          await client.mute(true); // no userId = mute self
+        } catch (e) {
+          // audio may not be fully ready yet — retry after a beat
+        }
+        await sleep(MUTE_RETRY_INTERVAL_MS);
+      }
+      console.log(
+        muted
+          ? '[Bot] Audio connected (computer), mic muted'
+          : '[Bot] WARNING: audio connected but could not confirm mute'
+      );
+      return true;
+    }
+
     async function boot() {
       const config = window.__BOT_CONFIG__;
       if (!config) {
@@ -64,6 +191,13 @@
       }
 
       const { signature, meetingNumber, password, userName, leaveAfterMs } = config;
+
+      // Audio needs SharedArrayBuffer, which requires crossOriginIsolated. If this
+      // logs false, the COOP/COEP headers aren't reaching the page and audio will
+      // fail with OPERATION_TIMEOUT.
+      console.log(
+        `[Bot] crossOriginIsolated=${self.crossOriginIsolated} SAB=${typeof SharedArrayBuffer !== 'undefined'}`
+      );
 
       // Safety cap timer always runs, regardless of leave mode (agents.md §2.6).
       setTimeout(() => leave('left-timer'), SAFETY_CAP_MS);
@@ -122,25 +256,20 @@
           if (entered) return;
           entered = true;
 
-          // Best-effort mute. A headless bot never connects computer audio, so
-          // it cannot transmit sound regardless; mute(true) only applies when
-          // audio is joined. 'no audio joined' here means the bot is already
-          // silent — the expected state. Video is off by default in Component
-          // View (no programmatic start), so nothing to stop there.
-          try {
-            await client.mute(true);
-            console.log('[Bot] Mic muted, video off (default)');
-          } catch (mediaErr) {
-            console.log('[Bot] Audio not connected — bot is silent (video off):',
-              mediaErr?.reason || mediaErr?.message || mediaErr);
-          }
-
+          // Report in-meeting IMMEDIATELY so Playwright's join wait succeeds —
+          // audio connect/mute must not gate this (it can take many seconds,
+          // especially under a bulk launch, and would blow the join timeout).
           setStatus('in-meeting');
 
           // Leave Mode A: Timer (meeting-end mode handled by connection-change).
           if (leaveAfterMs !== null && leaveAfterMs !== undefined) {
             setTimeout(() => leave('left-timer'), leaveAfterMs);
           }
+
+          // Connect computer audio (fake device) and mute, in the background, so
+          // the bot shows a connected-but-muted mic. Falls back to silent if the
+          // UI-driven join fails. Video stays off by default.
+          connectAudio();
         }
 
         const me = client.getCurrentUser();
