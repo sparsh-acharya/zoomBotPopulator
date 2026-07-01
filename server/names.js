@@ -11,11 +11,11 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, 'data');
 
-const RELIGIONS = ['hindu', 'muslim', 'christian'];
+const RELIGIONS = ['hindu', 'muslim'];
 
-// Religion mix used when none is requested. Roughly tracks India's population
-// share so a random batch looks realistic (normalized, not exact census data).
-const RELIGION_WEIGHTS = { hindu: 0.72, muslim: 0.18, christian: 0.1 };
+// Religion mix used when none is requested. Roughly tracks the Hindu:Muslim
+// population share so a random batch looks realistic (normalized to sum to 1).
+const RELIGION_WEIGHTS = { hindu: 0.9, muslim: 0.1 };
 
 // ── Load CSV pools once at module load ────────────────────────────────────────
 function loadCsv(file) {
