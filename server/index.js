@@ -107,6 +107,13 @@ const END_BEHAVIORS = new Set(['loop', 'hold', 'end']);
 // Each bot is a separate headless Chromium (~200-500MB RAM), so cap how many
 // a single launch request may spawn.
 const MAX_BOTS_PER_REQUEST = 10;
+// Stagger the START of each bot in a bulk launch so their audio (WASM) init
+// doesn't all fire simultaneously and starve CPU — that contention is what made
+// mic connection inconsistent on bulk launches (esp. on the ARM VM). Each bot
+// still runs concurrently once it has been kicked off.
+const BOT_LAUNCH_STAGGER_MS = 2_500;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Matches the meeting id in Zoom join links: /j/<id>, /wc/<id>, or /s/<id>.
 const ZOOM_URL_MEETING_ID = /\/(?:j|wc|s)\/(\d+)/;
@@ -252,9 +259,12 @@ app.post('/api/bot/launch', async (req, res) => {
                 ? Array.from({ length: count }, () => customName)
                 : generateNames(count, maleRatio);
 
-        // Fire all bots concurrently with the same config; each gets its own id,
-        // name, and signature. launchBot resolves (never rejects) per bot.
-        const launches = names.map((userName) => {
+        // Kick bots off one at a time, spaced BOT_LAUNCH_STAGGER_MS apart, so
+        // their audio init doesn't collide (each launchBot still runs
+        // concurrently once started). launchBot resolves (never rejects) per bot.
+        const launches = [];
+        for (let i = 0; i < names.length; i++) {
+            const userName = names[i];
             const botId = uuidv4().slice(0, BOT_ID_LENGTH);
             const signature = generateSignature(
                 ZOOM_SDK_KEY,
@@ -262,17 +272,21 @@ app.post('/api/bot/launch', async (req, res) => {
                 meetingNumber,
                 ROLE_PARTICIPANT
             );
-            return launchBot({
-                botId,
-                signature,
-                sdkKey: ZOOM_SDK_KEY,
-                meetingNumber,
-                password,
-                userName,
-                leaveAfterMs,
-                botPageUrl,
-            });
-        });
+            launches.push(
+                launchBot({
+                    botId,
+                    signature,
+                    sdkKey: ZOOM_SDK_KEY,
+                    meetingNumber,
+                    password,
+                    userName,
+                    leaveAfterMs,
+                    botPageUrl,
+                })
+            );
+            // Don't wait after the last one.
+            if (i < names.length - 1) await sleep(BOT_LAUNCH_STAGGER_MS);
+        }
 
         const bots = await Promise.all(launches);
         return res.json({ count: bots.length, bots });

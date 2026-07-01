@@ -28,12 +28,14 @@
     const SAFETY_CAP_MS = 3 * 60 * 60 * 1000; // always leave after 3h, any mode
     const CONNECTION_STATE_CLOSED = 'Closed';
     // Audio auto-join (UI-driven — Component View has no startAudio API).
-    // The SDK audio module can take 20s+ to come up after join, and the toolbar
-    // "Join Audio" button may exist before it actually works — so give a generous
-    // window and re-click periodically (not just once) until audio truly connects.
-    const AUDIO_JOIN_TIMEOUT_MS = 45_000;
+    // The SDK audio module can take 20s+ to come up after join (much longer on a
+    // loaded ARM VM running many bots), and while it loads the SDK rejects extra
+    // start attempts with errorCode 6011 ("Computer audio has been loading").
+    // So: give a long window, and re-click only occasionally — one click starts
+    // the load; after that we mostly WAIT for it to finish rather than spam it.
+    const AUDIO_JOIN_TIMEOUT_MS = 75_000;
     const AUDIO_POLL_INTERVAL_MS = 500;
-    const AUDIO_CLICK_RETRY_MS = 3_000; // re-click Join Audio this often until connected
+    const AUDIO_CLICK_RETRY_MS = 10_000; // re-click sparingly; loading must not be interrupted
     // Keep re-asserting mute until the SDK confirms it (handles the connect/mute
     // race that otherwise leaves bots broadcasting the fake-device tone).
     const MUTE_CONFIRM_TIMEOUT_MS = 15_000;
@@ -111,8 +113,8 @@
       ];
       const isConnected = () => client.getCurrentUser()?.audio === 'computer';
 
-      async function tryClick(scope) {
-        const el = findClickable(scope, audioMatchers);
+      async function tryClick(scope, matchers) {
+        const el = findClickable(scope, matchers);
         if (!el) return false;
         el.click();
         await sleep(400);
@@ -122,26 +124,29 @@
         return true;
       }
 
-      // Keep re-clicking a Join Audio control until audio actually connects.
-      // A single early click is unreliable: the button can render before the
-      // audio module is ready, so that click is a no-op and audio never joins.
-      // We poll the connection every AUDIO_POLL_INTERVAL_MS but only re-click
-      // every AUDIO_CLICK_RETRY_MS (clicking only while not yet connected, so we
-      // never toggle the mute button that replaces it once audio is up).
+      // Click a Join Audio control, then mostly WAIT for the load to finish.
+      // The first click uses the broad matcher (catches icon-only toolbars).
+      // After a click lands we re-click only every AUDIO_CLICK_RETRY_MS and only
+      // with the NARROW "Join Audio" matcher: once audio starts loading that
+      // button becomes a mic/mute icon, so the narrow matcher finds nothing and
+      // we stop clicking — letting the load complete instead of interrupting it
+      // with errorCode 6011 ("Computer audio has been loading"), and never
+      // toggling the mute button off by accident.
       let everClicked = false;
       let nextClickAt = 0;
       while (Date.now() < deadline) {
         if (isConnected()) break;
         if (Date.now() >= nextClickAt) {
-          if (await tryClick(root)) {
+          const matchers = everClicked ? [AUDIO_JOIN_BUTTON_RE] : audioMatchers;
+          if (await tryClick(root, matchers)) {
             everClicked = true;
-          } else {
+          } else if (!everClicked) {
             // Fallback: the mic control may be under the "More" overflow menu.
             const more = findClickable(root, [/^\s*more\s*$/i]);
             if (more) {
               more.click();
               await sleep(700);
-              if (await tryClick(document.body)) everClicked = true;
+              if (await tryClick(document.body, audioMatchers)) everClicked = true;
             }
           }
           nextClickAt = Date.now() + AUDIO_CLICK_RETRY_MS;
