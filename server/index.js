@@ -15,22 +15,22 @@ import { generateSignature, ROLE_PARTICIPANT, ROLE_HOST } from './signature.js';
 import { launchBot, stopBot, listActiveBots, listBotHistory, hasBot, getBotStatus } from './botManager.js';
 import { generateNames } from './names.js';
 import {
-  getAuthorizeUrl,
-  exchangeCode,
-  isConnected,
-  getMe,
-  getZak,
-  createMeeting,
+    getAuthorizeUrl,
+    exchangeCode,
+    isConnected,
+    getMe,
+    getZak,
+    createMeeting,
 } from './zoomApi.js';
 import {
-  onFire,
-  onRemove,
-  setBotStatusResolver,
-  schedule,
-  listJobs,
-  getJob,
-  cancel as cancelJob,
-  remove as removeJob,
+    onFire,
+    onRemove,
+    setBotStatusResolver,
+    schedule,
+    listJobs,
+    getJob,
+    cancel as cancelJob,
+    remove as removeJob,
 } from './scheduler.js';
 import { startTunnel } from './tunnel.js';
 
@@ -83,16 +83,16 @@ function sweepUploads(keep = new Set()) {
 const ALLOWED_VIDEO_EXT = new Set(['.mp4', '.webm', '.ogg', '.mov', '.m4v']);
 const MAX_VIDEO_BYTES = 500 * 1024 * 1024; // 500 MB
 const uploadStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    cb(null, `${uuidv4()}${ALLOWED_VIDEO_EXT.has(ext) ? ext : '.mp4'}`);
-  },
+    destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
+    filename: (_req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase();
+        cb(null, `${uuidv4()}${ALLOWED_VIDEO_EXT.has(ext) ? ext : '.mp4'}`);
+    },
 });
 const uploadVideo = multer({
-  storage: uploadStorage,
-  limits: { fileSize: MAX_VIDEO_BYTES },
-  fileFilter: (_req, file, cb) => cb(null, ALLOWED_VIDEO_EXT.has(path.extname(file.originalname).toLowerCase())),
+    storage: uploadStorage,
+    limits: { fileSize: MAX_VIDEO_BYTES },
+    fileFilter: (_req, file, cb) => cb(null, ALLOWED_VIDEO_EXT.has(path.extname(file.originalname).toLowerCase())),
 }).single('video');
 
 const PORT = process.env.PORT || 3000;
@@ -488,8 +488,9 @@ app.listen(PORT, '0.0.0.0', async () => {
     console.log(`---------------------------------------------------------------`);
     console.log(`------------------------DashBoard------------------------------`);
     console.log(`---------------------------------------------------------------`);
-    console.log(`[Server] Dashboard: http://localhost:${PORT}/dashboard.html`);
+    console.log(`[Local] Dashboard: http://localhost:${PORT}/dashboard.html`);
     console.log(`[Server] Ubuntu VM: http://80.225.245.78:${PORT}/dashboard.html`);
+    console.log(`[Domain] CloudFair: https://fnxpopulator.qzz.io/home`);
 
     // Open the ngrok tunnel in-process so `npm start` is all that's needed for
     // Zoom OAuth to reach /oauth/callback. No-op unless NGROK_DOMAIN is set.
