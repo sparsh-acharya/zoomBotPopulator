@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node server/index.js",
     "start:vm": "bash scripts/start-vm.sh",
-    "dev": "node --watch server/index.js"
+    "dev": "node --watch server/index.js",
+    "stop": "node scripts/stop.js"
   },
   "engines": {
     "node": ">=20"
