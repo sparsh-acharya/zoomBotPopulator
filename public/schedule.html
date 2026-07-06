@@ -81,7 +81,7 @@
     .job .field .k { font-size:10.5px; font-weight:600; letter-spacing:0.6px; text-transform:uppercase; color:var(--muted-soft); }
     .job .field .v { font-size:14px; color:var(--body-strong); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .job .actions { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:18px; padding-top:16px; border-top:1px solid var(--hairline); }
-    .link-pill { display:inline-flex; align-items:center; gap:7px; font-size:13px; font-weight:500; color:var(--amber); text-decoration:none; border:1px solid rgba(232,165,90,0.4); border-radius:var(--r-md); height:36px; padding:0 14px; }
+    .link-pill { display:inline-flex; align-items:center; gap:7px; font-size:13px; font-weight:500; color:var(--amber); text-decoration:none; border:1px solid rgba(232,165,90,0.4); border-radius:var(--r-md); height:36px; padding:0 14px; background:transparent; cursor:pointer; font-family:inherit; }
     .link-pill:hover { background:rgba(232,165,90,0.12); }
     .link-pill svg { width:14px; height:14px; }
     .empty { color:var(--muted); font-size:15px; }
@@ -313,20 +313,27 @@
           card.appendChild(e);
         }
 
-        // Footer: join link on the left, the primary action on the right.
+        // Footer: copy-link button on the left, the primary action on the right.
         const actions = document.createElement('div');
         actions.className = 'actions';
 
         const left = document.createElement('div');
         if (j.joinUrl) {
-          const link = document.createElement('a');
-          link.className = 'link-pill';
-          link.href = j.joinUrl;
-          link.target = '_blank';
-          link.rel = 'noopener';
-          link.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
-          link.append(document.createTextNode('Join link'));
-          left.appendChild(link);
+          const copyIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+          const copyBtn = document.createElement('button');
+          copyBtn.type = 'button';
+          copyBtn.className = 'link-pill';
+          const setLabel = (txt) => {
+            copyBtn.innerHTML = copyIcon;
+            copyBtn.append(document.createTextNode(txt));
+          };
+          setLabel('Copy link');
+          copyBtn.addEventListener('click', async () => {
+            const ok = await copyToClipboard(j.joinUrl);
+            setLabel(ok ? 'Copied!' : 'Press Ctrl+C');
+            setTimeout(() => setLabel('Copy link'), 1500);
+          });
+          left.appendChild(copyBtn);
         }
         actions.appendChild(left);
 
@@ -368,6 +375,31 @@
       if (!confirm('End this meeting now for everyone?')) return;
       await fetch(`/api/schedule/${encodeURIComponent(id)}/end`, { method: 'POST' }).catch(() => {});
       await loadJobs();
+    }
+
+    // Copy to clipboard. The async Clipboard API only works in a secure context
+    // (https / localhost); over plain http://<ip> we fall back to a hidden
+    // textarea + execCommand so the button still works on the VM's raw-IP URL.
+    async function copyToClipboard(text) {
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+      } catch { /* fall through to the legacy path */ }
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      } catch {
+        return false;
+      }
     }
 
     form.addEventListener('submit', async (e) => {

@@ -173,6 +173,20 @@ app.use('/uploads', express.static(UPLOADS_DIR));
 
 app.use(express.static(PUBLIC_DIR));
 
+// Clean URLs, mirroring the nginx rewrites on the VM (deploy/nginx/*.conf) so the
+// same paths work when the Node app is hit directly in local dev (no nginx). The
+// ".html" forms still work via express.static above.
+const CLEAN_PAGES = {
+    '/home': 'dashboard.html',
+    '/schedule': 'schedule.html',
+    '/history': 'history.html',
+    '/host-bot': 'host-bot.html',
+};
+app.get('/', (_req, res) => res.redirect('/home'));
+for (const [route, file] of Object.entries(CLEAN_PAGES)) {
+    app.get(route, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, file)));
+}
+
 // ── POST /api/signature ───────────────────────────────────────────────────────
 // Returns a signature + public sdkKey. Secret never appears in the response.
 app.post('/api/signature', (req, res) => {
