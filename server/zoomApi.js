@@ -133,7 +133,9 @@ async function apiGet(pathAndQuery) {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`GET ${pathAndQuery} failed (${res.status}): ${text}`);
+    const err = new Error(`GET ${pathAndQuery} failed (${res.status}): ${text}`);
+    err.status = res.status; // let callers branch on 404 vs 403/etc.
+    throw err;
   }
   return res.json();
 }
@@ -159,6 +161,27 @@ async function apiPost(pathAndQuery, payload) {
 export async function getMe() {
   const me = await apiGet('/users/me');
   return { id: me.id, email: me.email, displayName: `${me.first_name || ''} ${me.last_name || ''}`.trim() };
+}
+
+/**
+ * Fetch a meeting the connected user should own. Used as a pre-flight check
+ * before a host bot tries to START it: a host-role join fails with the opaque
+ * "Meeting does not exist." whenever the meeting isn't owned by the account the
+ * ZAK authenticates. This call surfaces that condition server-side instead —
+ * a 404 here means the meeting isn't on the connected account (wrong account,
+ * different Zoom app, or a stale/deleted number).
+ * @param {string} meetingNumber
+ * @returns {Promise<{id:string,hostId:string,hostEmail:string,status:string,topic:string}>}
+ */
+export async function getMeeting(meetingNumber) {
+  const m = await apiGet(`/meetings/${meetingNumber}`);
+  return {
+    id: String(m.id),
+    hostId: m.host_id || '',
+    hostEmail: m.host_email || '',
+    status: m.status || '',
+    topic: m.topic || '',
+  };
 }
 
 /**

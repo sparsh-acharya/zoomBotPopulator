@@ -264,7 +264,11 @@
 
         client.on('connection-change', (payload) => {
           const reason = String(payload?.reason ?? '');
-          console.log(`[HostBot] connection-change: ${payload?.state}${reason ? ' (' + reason + ')' : ''}`);
+          const code = payload?.errorCode;
+          console.log(
+            `[HostBot] connection-change: ${payload?.state}` +
+            `${reason ? ' (' + reason + ')' : ''}${code != null ? ' [errorCode=' + code + ']' : ''}`
+          );
           if (payload?.state === CONNECTION_STATE_CLOSED) {
             const wasRemoved = REMOVED_REASON_HINTS.some((h) => reason.toLowerCase().includes(h));
             leave(wasRemoved ? 'left-removed' : 'left-meeting-ended');
@@ -292,7 +296,8 @@
         // join status is reported promptly.
         startPresentation(videoUrl, endBehavior || 'loop');
       } catch (err) {
-        console.error('[HostBot] Error:', err?.reason || err?.message || err);
+        const code = err?.errorCode != null ? ` [errorCode=${err.errorCode}]` : '';
+        console.error('[HostBot] Error:', (err?.reason || err?.message || err) + code);
         setStatus('error');
       }
     }

@@ -20,6 +20,7 @@ import {
     isConnected,
     getMe,
     getZak,
+    getMeeting,
     createMeeting,
 } from './zoomApi.js';
 import {
@@ -473,7 +474,52 @@ setBotStatusResolver(getBotStatus);
 onRemove((job) => deleteUploadFile(uploadPathFromUrl(job.videoUrl)));
 
 onFire(async (job) => {
+    // Pre-flight: a host-role (role=1) join STARTS the meeting under the account
+    // the ZAK authenticates. If that account doesn't own job.meetingNumber, Zoom
+    // rejects the join with the opaque "Meeting does not exist." — after the bot
+    // has already launched, so the real cause is invisible. Verify ownership here
+    // and log the identities, turning that failure into a clear, early error.
+    let me = null;
+    try {
+        me = await getMe();
+    } catch (err) {
+        console.warn(`[Fire ${job.id}] Could not read connected account: ${err.message}`);
+    }
+    try {
+        const meeting = await getMeeting(job.meetingNumber);
+        const ownerMismatch = me?.id && meeting.hostId && me.id !== meeting.hostId;
+        console.log(
+            `[Fire ${job.id}] Starting meeting ${job.meetingNumber} (status=${meeting.status}) ` +
+            `as ${me?.email || 'unknown'} — owner=${meeting.hostEmail || meeting.hostId || 'unknown'}` +
+            (ownerMismatch ? ' ⚠️ ACCOUNT MISMATCH' : '')
+        );
+        if (ownerMismatch) {
+            throw new Error(
+                `Connected account (${me.email}) does not own meeting ${job.meetingNumber} ` +
+                `(owner ${meeting.hostEmail || meeting.hostId}). Reconnect the owning Zoom account.`
+            );
+        }
+    } catch (err) {
+        // A 404 means the meeting isn't on the connected account (wrong account,
+        // different Zoom app, or a stale/deleted number) — exactly what surfaces
+        // as "Meeting does not exist." inside the bot. Fail loud and early.
+        if (err.status === 404) {
+            throw new Error(
+                `Meeting ${job.meetingNumber} not found on connected account ` +
+                `${me?.email || '(unknown)'} — this is what makes the host bot report ` +
+                `"Meeting does not exist." Reconnect the account that owns it.`
+            );
+        }
+        // Any other failure (e.g. missing meeting:read scope → 403, rate limit,
+        // transient network) must NOT block a launch that would otherwise work —
+        // the pre-flight is diagnostics, not a hard gate. Warn and proceed.
+        console.warn(
+            `[Fire ${job.id}] Pre-flight meeting check skipped (${err.status || 'no status'}): ${err.message}`
+        );
+    }
+
     const zak = await getZak();
+    console.log(`[Fire ${job.id}] ZAK acquired (len=${zak?.length ?? 0})`);
     const botId = uuidv4().slice(0, BOT_ID_LENGTH);
     const signature = generateSignature(ZOOM_SDK_KEY, ZOOM_SDK_SECRET, job.meetingNumber, ROLE_HOST);
     // 'end' lets the clip's own end event close the meeting; loop/hold keep it
