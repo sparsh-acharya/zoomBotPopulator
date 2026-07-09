@@ -252,14 +252,16 @@ export function deleteItem(id) {
 /**
  * Open a chunked-upload session. Returns an opaque uploadId the client posts
  * chunks to. The raw file is created empty and appended to, in order.
- * @param {{ name: string }} input
+ * @param {{ name: string, filename?: string }} input
+ *   name     - the display name the video is saved/searched under
+ *   filename - the original filename, used only for the raw file's extension
  * @returns {{ uploadId: string }}
  */
-export function beginUpload({ name }) {
+export function beginUpload({ name, filename }) {
   fs.mkdirSync(LIBRARY_DIR, { recursive: true });
   const id = uuidv4();
   const uploadId = uuidv4();
-  const ext = path.extname(String(name || '')).toLowerCase() || '.mp4';
+  const ext = path.extname(String(filename || '')).toLowerCase() || '.mp4';
   const filePath = path.join(LIBRARY_DIR, `${id}.orig${ext}`);
   fs.writeFileSync(filePath, ''); // start empty; chunks append in order
   uploads.set(uploadId, { id, name, filePath, receivedBytes: 0, lastActivity: Date.now() });

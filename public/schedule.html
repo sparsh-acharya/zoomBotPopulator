@@ -110,6 +110,9 @@
     .modal-close { background:transparent; border:0; color:var(--muted); font-size:22px; line-height:1; cursor:pointer; padding:4px; }
     .modal-close:hover { color:var(--ink); }
     .modal-body { padding:16px 22px 22px; overflow-y:auto; }
+    .vid-search { font-family:var(--sans); font-size:15px; color:var(--ink); background:var(--canvas); border:1px solid var(--hairline); border-radius:var(--r-md); height:var(--control-h); padding:0 13px; width:100%; margin-bottom:14px; }
+    .vid-search::placeholder { color:var(--muted-soft); }
+    .vid-search:focus { outline:none; border-color:var(--primary); box-shadow:0 0 0 3px rgba(204,120,92,0.15); }
     .vid-list { display:grid; gap:10px; }
     .vid-item { display:flex; align-items:center; justify-content:space-between; gap:12px; background:var(--canvas); border:1px solid var(--hairline); border-radius:var(--r-md); padding:14px 16px; cursor:pointer; text-align:left; font-family:var(--sans); width:100%; }
     .vid-item:hover { border-color:var(--primary); background:var(--surface-cream-strong); }
@@ -254,41 +257,75 @@
       modalBody.replaceChildren(p);
     }
 
-    function renderVideoList(items) {
-      const ready = items.filter((it) => it.status === 'ready');
-      if (!ready.length) {
-        modalMessage(null, 'No ready videos yet. <a href="/videos">Upload videos →</a>');
+    // Ready videos loaded into the picker; searched client-side by name.
+    let pickerVideos = [];
+
+    function makeVideoButton(it) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'vid-item';
+      const info = document.createElement('div');
+      const n = document.createElement('div');
+      n.className = 'n';
+      n.textContent = it.name;
+      const m = document.createElement('div');
+      m.className = 'm';
+      m.textContent = `${formatBytes(it.sizeBytes)} · added ${new Date(it.createdAt).toLocaleDateString()}`;
+      info.append(n, m);
+      const pick = document.createElement('span');
+      pick.className = 'chev';
+      pick.textContent = 'Select';
+      btn.append(info, pick);
+      btn.addEventListener('click', () => { selectVideo(it); closeModal(); });
+      return btn;
+    }
+
+    // Render only the results list for the current query into #vidListWrap, so
+    // typing never recreates (and blurs) the search input.
+    function renderPickerList(query) {
+      const wrap = document.getElementById('vidListWrap');
+      if (!wrap) return;
+      const q = query.trim().toLowerCase();
+      const matches = q ? pickerVideos.filter((it) => it.name.toLowerCase().includes(q)) : pickerVideos;
+      wrap.replaceChildren();
+      if (!matches.length) {
+        const p = document.createElement('p');
+        p.className = 'modal-empty';
+        p.textContent = 'No videos match your search.';
+        wrap.appendChild(p);
         return;
       }
       const list = document.createElement('div');
       list.className = 'vid-list';
-      for (const it of ready) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'vid-item';
-        const info = document.createElement('div');
-        const n = document.createElement('div');
-        n.className = 'n';
-        n.textContent = it.name;
-        const m = document.createElement('div');
-        m.className = 'm';
-        m.textContent = `${formatBytes(it.sizeBytes)} · added ${new Date(it.createdAt).toLocaleDateString()}`;
-        info.append(n, m);
-        const pick = document.createElement('span');
-        pick.className = 'chev';
-        pick.textContent = 'Select';
-        btn.append(info, pick);
-        btn.addEventListener('click', () => { selectVideo(it); closeModal(); });
-        list.appendChild(btn);
+      for (const it of matches) list.appendChild(makeVideoButton(it));
+      wrap.appendChild(list);
+    }
+
+    // Build the picker once per open: a search box + a results container.
+    function buildPicker(items) {
+      pickerVideos = items.filter((it) => it.status === 'ready');
+      if (!pickerVideos.length) {
+        modalMessage(null, 'No ready videos yet. <a href="/videos">Upload videos →</a>');
+        return;
       }
-      modalBody.replaceChildren(list);
+      modalBody.replaceChildren();
+      const search = document.createElement('input');
+      search.type = 'search';
+      search.className = 'vid-search';
+      search.placeholder = 'Search by name…';
+      search.addEventListener('input', () => renderPickerList(search.value));
+      const wrap = document.createElement('div');
+      wrap.id = 'vidListWrap';
+      modalBody.append(search, wrap);
+      renderPickerList('');
+      search.focus();
     }
 
     async function openModal() {
       videoModal.classList.add('open');
       modalMessage('Loading…');
       try {
-        renderVideoList(await (await fetch('/api/library')).json());
+        buildPicker(await (await fetch('/api/library')).json());
       } catch {
         modalMessage('Could not load your videos.');
       }

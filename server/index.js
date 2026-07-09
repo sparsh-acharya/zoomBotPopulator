@@ -411,15 +411,19 @@ app.post('/api/library', (req, res) => {
 // POST the file in chunks that each stay under the cap, then complete.
 app.post('/api/library/uploads', (req, res) => {
     const name = String(req.body?.name ?? '').trim();
+    const filename = String(req.body?.filename ?? '').trim();
     const size = Number(req.body?.size);
-    const ext = path.extname(name).toLowerCase();
-    if (!name || !ALLOWED_VIDEO_EXT.has(ext)) {
+    const ext = path.extname(filename).toLowerCase();
+    if (!name) {
+        return res.status(400).json({ error: 'A video name is required' });
+    }
+    if (!filename || !ALLOWED_VIDEO_EXT.has(ext)) {
         return res.status(400).json({ error: `Unsupported or missing file type — allowed: ${[...ALLOWED_VIDEO_EXT].join(', ')}` });
     }
     if (Number.isFinite(size) && size > library.MAX_UPLOAD_BYTES) {
         return res.status(413).json({ error: 'File exceeds the maximum allowed size' });
     }
-    const { uploadId } = library.beginUpload({ name });
+    const { uploadId } = library.beginUpload({ name, filename });
     return res.json({ uploadId, chunkBytes: library.UPLOAD_CHUNK_BYTES });
 });
 

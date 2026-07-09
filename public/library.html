@@ -45,6 +45,9 @@
 
     form { display:grid; gap:16px; }
     label { display:flex; flex-direction:column; gap:7px; font-size:13px; font-weight:500; color:var(--muted); }
+    input[type="text"] { font-family:var(--sans); font-size:15px; color:var(--ink); background:var(--canvas); border:1px solid var(--hairline); border-radius:var(--r-md); padding:0 13px; height:var(--control-h); width:100%; }
+    input[type="text"]::placeholder { color:var(--muted-soft); }
+    input[type="text"]:focus { outline:none; border-color:var(--primary); box-shadow:0 0 0 3px rgba(204,120,92,0.15); }
     input[type="file"] { font-size:14px; color:var(--body); background:var(--canvas); border:1px dashed var(--hairline); border-radius:var(--r-md); padding:12px; width:100%; }
     .file-info { font-size:13px; margin-top:-6px; display:flex; flex-direction:column; gap:3px; }
     .file-info.ok { color:var(--success); }
@@ -107,12 +110,15 @@
     <div class="layout">
       <section class="card form-card">
         <div class="card-head">
-          <h2>Add videos</h2>
-          <p>Select one or more files — uploads keep running in the background, so you can add more right away.</p>
+          <h2>Add a video</h2>
+          <p>Give it a memorable name — that's what you'll search for when scheduling. Uploads run in the background, so you can add another right away.</p>
         </div>
         <form id="uploadForm">
-          <label id="videoLabel">Video files (mp4 / webm / mov)
-            <input id="video" type="file" multiple accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.mov,.m4v" />
+          <label>Video name
+            <input id="videoName" type="text" maxlength="120" placeholder="e.g. Q3 All-Hands Recording" />
+          </label>
+          <label id="videoLabel">Video file (mp4 / webm / mov)
+            <input id="video" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.mov,.m4v" />
           </label>
           <div id="fileInfo" class="file-info" hidden></div>
           <button type="submit" class="btn-primary" id="submitBtn" disabled>Upload</button>
@@ -131,6 +137,7 @@
     const REFRESH_INTERVAL_MS = 3000;
     const form = document.getElementById('uploadForm');
     const submitBtn = document.getElementById('submitBtn');
+    const videoNameEl = document.getElementById('videoName');
     const videoEl = document.getElementById('video');
     const videoLabel = document.getElementById('videoLabel');
     const fileInfoEl = document.getElementById('fileInfo');
@@ -142,7 +149,7 @@
     let maxUploadBytes = 4 * 1024 * 1024 * 1024;
     let chunkBytes = 80 * 1024 * 1024; // each chunk stays well under the 100 MB proxy cap
     let allowedExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.m4v'];
-    let filesOk = false;
+    let fileOk = false;
 
     // In-progress uploads, keyed by a per-file token, for the status note.
     const activeUploads = new Map(); // token -> { name, pct }
@@ -164,7 +171,7 @@
         if (Array.isArray(cfg.allowedExtensions)) allowedExtensions = cfg.allowedExtensions;
       } catch { /* keep defaults */ }
       videoLabel.firstChild.textContent =
-        `Video files (${allowedExtensions.map((e) => e.replace('.', '')).join(' / ')}, ≤ ${formatBytes(maxUploadBytes)} each) `;
+        `Video file (${allowedExtensions.map((e) => e.replace('.', '')).join(' / ')}, ≤ ${formatBytes(maxUploadBytes)}) `;
     }
 
     function extOf(name) {
@@ -172,42 +179,51 @@
       return dot >= 0 ? name.slice(dot).toLowerCase() : '';
     }
 
-    // Validate every picked file; reflect the result under the picker.
-    function checkFiles() {
-      const files = [...videoEl.files];
-      if (!files.length) {
-        filesOk = false;
+    // Validate the picked file; reflect the result under the picker.
+    function checkFile() {
+      const file = videoEl.files[0];
+      if (!file) {
+        fileOk = false;
         fileInfoEl.hidden = true;
         updateSubmitState();
         return;
       }
-      const problems = [];
-      for (const f of files) {
-        const ext = extOf(f.name);
-        if (!allowedExtensions.includes(ext)) problems.push(`✕ ${f.name}: unsupported type "${ext || 'unknown'}"`);
-        else if (f.size > maxUploadBytes) problems.push(`✕ ${f.name}: ${formatBytes(f.size)} exceeds the ${formatBytes(maxUploadBytes)} limit`);
-      }
+      const ext = extOf(file.name);
       fileInfoEl.hidden = false;
       fileInfoEl.replaceChildren();
-      if (problems.length) {
-        filesOk = false;
+      const d = document.createElement('div');
+      if (!allowedExtensions.includes(ext)) {
+        fileOk = false;
         fileInfoEl.className = 'file-info bad';
-        for (const p of problems) { const d = document.createElement('div'); d.textContent = p; fileInfoEl.appendChild(d); }
+        d.textContent = `✕ ${file.name}: unsupported type "${ext || 'unknown'}"`;
+      } else if (file.size > maxUploadBytes) {
+        fileOk = false;
+        fileInfoEl.className = 'file-info bad';
+        d.textContent = `✕ ${file.name}: ${formatBytes(file.size)} exceeds the ${formatBytes(maxUploadBytes)} limit`;
       } else {
-        filesOk = true;
+        fileOk = true;
         fileInfoEl.className = 'file-info ok';
-        const d = document.createElement('div');
-        d.textContent = `✓ ${files.length} file${files.length > 1 ? 's' : ''} ready · ${formatBytes(files.reduce((s, f) => s + f.size, 0))} total`;
-        fileInfoEl.appendChild(d);
+        d.textContent = `✓ ${file.name} · ${formatBytes(file.size)}`;
       }
+      fileInfoEl.appendChild(d);
       updateSubmitState();
     }
 
-    function updateSubmitState() {
-      submitBtn.disabled = !filesOk;
+    // On pick, prefill the name (minus extension) if empty — a convenience; the
+    // field stays editable and is required before Upload enables.
+    function prefillName() {
+      const file = videoEl.files[0];
+      if (file && !videoNameEl.value.trim()) {
+        videoNameEl.value = file.name.replace(/\.[^.]+$/, '');
+      }
     }
 
-    videoEl.addEventListener('change', checkFiles);
+    function updateSubmitState() {
+      submitBtn.disabled = !fileOk || !videoNameEl.value.trim();
+    }
+
+    videoEl.addEventListener('change', () => { prefillName(); checkFile(); });
+    videoNameEl.addEventListener('input', updateSubmitState);
 
     function badge(status) {
       const b = document.createElement('span');
@@ -310,18 +326,20 @@
       return `server returned HTTP ${res.status}.`;
     }
 
-    // Upload one file by slicing it into chunks that each stay under the proxy's
-    // per-request size cap. The server reassembles them, then transcodes.
-    async function uploadOneFile(file) {
+    // Upload one file under the given display name, slicing it into chunks that
+    // each stay under the proxy's per-request cap. The server reassembles them,
+    // saves the video under `displayName`, then transcodes.
+    async function uploadOneFile(file, displayName) {
       const token = ++uploadSeq;
-      activeUploads.set(token, { name: file.name, pct: 0 });
+      activeUploads.set(token, { name: displayName, pct: 0 });
       renderUploadNote();
       try {
-        // 1. Open a session.
+        // 1. Open a session (name = what it's saved/searched as; filename gives
+        //    the extension for the raw file).
         const initRes = await fetch('/api/library/uploads', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: file.name, size: file.size }),
+          body: JSON.stringify({ name: displayName, filename: file.name, size: file.size }),
         });
         if (!initRes.ok) throw new Error(await errorMessage(initRes));
         const { uploadId, chunkBytes: serverChunk } = await initRes.json();
@@ -360,22 +378,18 @@
 
     form.addEventListener('submit', (e) => {
       e.preventDefault();
-      const files = [...videoEl.files];
-      if (!files.length || !filesOk) return;
+      const file = videoEl.files[0];
+      const name = videoNameEl.value.trim();
+      if (!file || !fileOk || !name) return;
 
-      // Reset the picker immediately so the user can queue another batch while
-      // this one uploads/transcodes in the background.
+      // Reset the form immediately so another upload can start while this one
+      // uploads/transcodes in the background.
       form.reset();
-      checkFiles();
+      checkFile();
 
-      // Upload this batch sequentially (kind to bandwidth); the handler returns
-      // right away so the page stays responsive and more can be queued.
-      (async () => {
-        for (const f of files) {
-          try { await uploadOneFile(f); }
-          catch (err) { alert(`Upload failed for ${f.name}: ${err.message}`); }
-        }
-      })();
+      // Fire and forget — the handler returns right away so the page stays
+      // responsive and the next video can be named + queued.
+      uploadOneFile(file, name).catch((err) => alert(`Upload failed: ${err.message}`));
     });
 
     loadConfig();
