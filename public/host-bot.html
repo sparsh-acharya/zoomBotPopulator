@@ -219,11 +219,25 @@
         });
       }
       if (videoUrl) {
+        // Surface the REAL media failure. A play() rejection here is usually NOT
+        // an autoplay-policy block (we launch with no-user-gesture autoplay) but
+        // a load/decode error: video.error.code 4 = SRC_NOT_SUPPORTED (unplayable
+        // codec — e.g. H.264 in Playwright's bundled Chromium) vs a 404 on the src.
+        const MEDIA_ERR = { 1: 'ABORTED', 2: 'NETWORK', 3: 'DECODE', 4: 'SRC_NOT_SUPPORTED' };
+        video.addEventListener('error', async () => {
+          const code = video.error?.code;
+          let httpStatus = '?';
+          try { httpStatus = (await fetch(videoUrl, { method: 'HEAD' })).status; } catch (_) {}
+          console.error(
+            `[HostBot] clip failed to load: video.error=${code} (${MEDIA_ERR[code] || 'unknown'}), ` +
+            `HTTP ${httpStatus}, src=${videoUrl}`
+          );
+        });
         video.src = videoUrl;
         try {
           await video.play();
         } catch (e) {
-          console.warn('[HostBot] Autoplay blocked:', e?.message || e);
+          console.warn(`[HostBot] video.play() rejected: ${e?.name || ''} ${e?.message || e}`.trim());
         }
       } else {
         console.warn('[HostBot] No videoUrl provided — nothing to present');
@@ -274,6 +288,23 @@
             leave(wasRemoved ? 'left-removed' : 'left-meeting-ended');
           }
         });
+
+        // Decode the signature payload so the log shows EXACTLY what the SDK is
+        // starting with: the mn/role baked into the token must match meetingNumber
+        // and be role=1, and zak must be non-empty — otherwise a role-1 start
+        // silently degrades to a participant join of a not-yet-started meeting,
+        // which Zoom reports as "Meeting does not exist." (errorCode 3610).
+        try {
+          const claims = JSON.parse(atob(String(signature).split('.')[1] || ''));
+          console.log(
+            `[HostBot] join → meetingNumber=${meetingNumber} pwd=${password ? 'yes' : 'no'} ` +
+            `zakLen=${zak ? zak.length : 0} | sig.mn=${claims.mn} sig.role=${claims.role} ` +
+            `sig.appKey=${claims.appKey ? String(claims.appKey).slice(0, 6) + '…' : '(none)'} ` +
+            `mnMatch=${String(claims.mn) === String(meetingNumber)}`
+          );
+        } catch (e) {
+          console.warn('[HostBot] could not decode signature for logging:', e?.message || e);
+        }
 
         // role-1 signature + the host's ZAK is what STARTS (not just joins) the
         // meeting. Without zak this would fail to start a not-yet-started meeting.

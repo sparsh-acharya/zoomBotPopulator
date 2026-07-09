@@ -34,6 +34,7 @@ import {
     remove as removeJob,
 } from './scheduler.js';
 import { startTunnel } from './tunnel.js';
+import { transcodeToWebm } from './transcode.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -417,12 +418,29 @@ app.post('/api/schedule', (req, res) => {
                 durationMinutes,
             });
 
+            // Transcode to WebM (VP8+Opus, <=720p30) so the presenter bot's
+            // bundled Chromium can actually decode it — it has no H.264/AAC. On
+            // any failure (e.g. ffmpeg not installed in local dev) we fall back
+            // to the original upload so scheduling still succeeds.
+            let videoFilename = req.file.filename;
+            try {
+                const webmPath = await transcodeToWebm(req.file.path);
+                const webmName = path.basename(webmPath);
+                if (webmName !== videoFilename) {
+                    deleteUploadFile(req.file.path); // keep only the playable .webm
+                    videoFilename = webmName;
+                }
+                console.log(`[Schedule] Transcoded upload → ${videoFilename}`);
+            } catch (err) {
+                console.warn(`[Schedule] Transcode failed, using original file: ${err.message}`);
+            }
+
             const job = schedule({
                 topic,
                 startTime: when.toISOString(),
                 durationMinutes,
                 endBehavior,
-                videoUrl: `/uploads/${req.file.filename}`,
+                videoUrl: `/uploads/${videoFilename}`,
                 meetingNumber: meeting.meetingNumber,
                 password: meeting.password,
                 joinUrl: meeting.joinUrl,
