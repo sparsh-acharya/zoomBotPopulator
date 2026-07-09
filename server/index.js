@@ -113,7 +113,7 @@ const BOT_ID_LENGTH = 8;
 const END_BEHAVIORS = new Set(['loop', 'hold', 'end']);
 // Each bot is a separate headless Chromium (~200-500MB RAM), so cap how many
 // a single launch request may spawn.
-const MAX_BOTS_PER_REQUEST = 10;
+const MAX_BOTS_PER_REQUEST = 30;
 // Stagger the START of each bot in a bulk launch so their audio (WASM) init
 // doesn't all fire simultaneously and starve CPU — that contention is what made
 // mic connection inconsistent on bulk launches (esp. on the ARM VM). Each bot
