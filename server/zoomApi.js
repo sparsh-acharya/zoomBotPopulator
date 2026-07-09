@@ -202,9 +202,13 @@ export async function getZak() {
  * @param {string} opts.startTime - ISO8601 (e.g. 2026-06-25T18:30:00Z)
  * @param {number} opts.durationMinutes
  * @param {string} [opts.timezone]
+ * @param {boolean} [opts.usePmi] - bind the meeting to the host's Personal
+ *   Meeting ID. With use_pmi the response `id` is the PMI (a persistent room
+ *   that's always startable), instead of a fresh one-off scheduled meeting that
+ *   sits in `status=waiting` until its start time.
  * @returns {Promise<{meetingNumber:string,password:string,joinUrl:string,startTime:string}>}
  */
-export async function createMeeting({ topic, startTime, durationMinutes, timezone }) {
+export async function createMeeting({ topic, startTime, durationMinutes, timezone, usePmi = false }) {
   const data = await apiPost('/users/me/meetings', {
     topic: topic || 'Scheduled presentation',
     type: MEETING_TYPE_SCHEDULED,
@@ -212,6 +216,7 @@ export async function createMeeting({ topic, startTime, durationMinutes, timezon
     duration: durationMinutes,
     timezone: timezone || 'UTC',
     settings: {
+      use_pmi: usePmi,
       host_video: true,
       participants_video: false,
       join_before_host: false,

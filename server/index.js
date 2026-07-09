@@ -100,6 +100,10 @@ const uploadVideo = multer({
 const PORT = process.env.PORT || 3000;
 const ZOOM_SDK_KEY = process.env.ZOOM_SDK_KEY;
 const ZOOM_SDK_SECRET = process.env.ZOOM_SDK_SECRET;
+// Opt-in: bind scheduled presentations to the host's Personal Meeting ID (a
+// persistent, always-startable room) instead of a one-off scheduled meeting.
+// Off by default so instances that work with unique meetings are unaffected.
+const USE_PMI = process.env.ZOOM_USE_PMI === 'true';
 
 const DIGITS_ONLY = /^\d+$/;
 const BOT_ID_LENGTH = 8;
@@ -416,7 +420,11 @@ app.post('/api/schedule', (req, res) => {
                 topic,
                 startTime: when.toISOString(),
                 durationMinutes,
+                usePmi: USE_PMI,
             });
+            console.log(
+                `[Schedule] Meeting ${meeting.meetingNumber} created (use_pmi=${USE_PMI})`
+            );
 
             // Transcode to WebM (VP8+Opus, <=720p30) so the presenter bot's
             // bundled Chromium can actually decode it — it has no H.264/AAC. On
