@@ -93,6 +93,31 @@
     .s-running { background:rgba(93,184,114,0.22); color:#7fe0a1; }
     .s-done, .s-canceled { background:var(--surface-cream-strong); color:var(--muted); }
     .s-error { background:rgba(198,69,69,0.22); color:#ec9595; }
+
+    /* Choose-from-library control */
+    .btn-select { font-family:var(--sans); font-size:15px; color:var(--ink); background:var(--canvas); border:1px dashed var(--hairline); border-radius:var(--r-md); height:var(--control-h); padding:0 14px; width:100%; cursor:pointer; text-align:left; display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    .btn-select:hover { border-color:var(--primary); }
+    .btn-select .chev { color:var(--muted); flex:none; }
+    .btn-select.chosen { border-style:solid; color:var(--ink); }
+    .selected-video { font-size:13px; margin-top:-6px; color:var(--success); display:flex; align-items:center; gap:7px; }
+
+    /* Library picker modal */
+    .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.55); display:none; align-items:center; justify-content:center; padding:24px; z-index:50; }
+    .modal-overlay.open { display:flex; }
+    .modal { background:var(--surface-card); border:1px solid var(--hairline); border-radius:var(--r-lg); width:min(560px,100%); max-height:80vh; display:flex; flex-direction:column; overflow:hidden; }
+    .modal-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:20px 22px; border-bottom:1px solid var(--hairline); }
+    .modal-head h3 { font-family:var(--serif); font-weight:500; font-size:22px; color:var(--ink); margin:0; }
+    .modal-close { background:transparent; border:0; color:var(--muted); font-size:22px; line-height:1; cursor:pointer; padding:4px; }
+    .modal-close:hover { color:var(--ink); }
+    .modal-body { padding:16px 22px 22px; overflow-y:auto; }
+    .vid-list { display:grid; gap:10px; }
+    .vid-item { display:flex; align-items:center; justify-content:space-between; gap:12px; background:var(--canvas); border:1px solid var(--hairline); border-radius:var(--r-md); padding:14px 16px; cursor:pointer; text-align:left; font-family:var(--sans); width:100%; }
+    .vid-item:hover { border-color:var(--primary); background:var(--surface-cream-strong); }
+    .vid-item .n { font-size:15px; font-weight:500; color:var(--ink); word-break:break-word; }
+    .vid-item .m { font-size:12.5px; color:var(--muted); margin-top:3px; }
+    .modal-empty { color:var(--muted); font-size:15px; text-align:center; padding:24px 8px; }
+    .modal-empty a { color:var(--amber); text-decoration:none; }
+    .modal-empty a:hover { text-decoration:underline; }
   </style>
 </head>
 <body>
@@ -109,6 +134,7 @@
     <nav>
       <a class="nav-link" href="/home">Dashboard</a>
       <a class="nav-link active" href="/schedule">Schedule</a>
+      <a class="nav-link" href="/videos">Videos</a>
       <a class="nav-link" href="/history">History</a>
     </nav>
   </header>
@@ -147,10 +173,14 @@
               <option value="end">End the meeting immediately</option>
             </select>
           </label>
-          <label id="videoLabel">Video file (mp4 / webm / mov)
-            <input id="video" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.mov,.m4v" />
+          <label>Presentation video
+            <button type="button" class="btn-select" id="chooseVideoBtn">
+              <span id="chooseVideoText">Choose from library…</span>
+              <span class="chev">▾</span>
+            </button>
           </label>
-          <div id="fileInfo" class="file-info" hidden></div>
+          <div id="selectedVideo" class="selected-video" hidden></div>
+          <input type="hidden" id="libraryId" />
           <button type="submit" class="btn-primary" id="submitBtn">Schedule presentation</button>
         </form>
       </section>
@@ -162,6 +192,19 @@
     </div>
   </div>
 
+  <!-- Library picker: pops up on "Choose from library…" -->
+  <div class="modal-overlay" id="videoModal">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Choose a video">
+      <div class="modal-head">
+        <h3>Choose a video</h3>
+        <button type="button" class="modal-close" id="modalClose" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body" id="modalBody">
+        <p class="modal-empty">Loading…</p>
+      </div>
+    </div>
+  </div>
+
   <script>
     const REFRESH_INTERVAL_MS = 4000;
     const connText = document.getElementById('connText');
@@ -170,66 +213,92 @@
     const form = document.getElementById('scheduleForm');
     const submitBtn = document.getElementById('submitBtn');
     const jobsEl = document.getElementById('jobs');
-    const videoEl = document.getElementById('video');
-    const videoLabel = document.getElementById('videoLabel');
-    const fileInfoEl = document.getElementById('fileInfo');
+    const chooseVideoBtn = document.getElementById('chooseVideoBtn');
+    const chooseVideoText = document.getElementById('chooseVideoText');
+    const selectedVideoEl = document.getElementById('selectedVideo');
+    const libraryIdEl = document.getElementById('libraryId');
+    const videoModal = document.getElementById('videoModal');
+    const modalClose = document.getElementById('modalClose');
+    const modalBody = document.getElementById('modalBody');
 
     let connected = false;
-    // Upload limits, fetched from the server so the UI matches it exactly.
-    let maxVideoBytes = 500 * 1024 * 1024;
-    let allowedExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.m4v'];
-    let fileOk = true; // false when a selected file is invalid
 
     function formatBytes(n) {
+      if (n == null) return '—';
       if (n >= 1024 * 1024 * 1024) return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
       if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
       if (n >= 1024) return (n / 1024).toFixed(0) + ' KB';
       return n + ' B';
     }
 
-    async function loadConfig() {
-      try {
-        const cfg = await (await fetch('/api/config')).json();
-        if (cfg.maxVideoBytes) maxVideoBytes = cfg.maxVideoBytes;
-        if (Array.isArray(cfg.allowedExtensions)) allowedExtensions = cfg.allowedExtensions;
-      } catch { /* keep defaults */ }
-      videoLabel.firstChild.textContent =
-        `Video file (${allowedExtensions.map((e) => e.replace('.', '')).join(' / ')}, ≤ ${formatBytes(maxVideoBytes)}) `;
+    function updateSubmitState() {
+      submitBtn.disabled = !connected || !libraryIdEl.value;
     }
 
-    // Validate the picked file and reflect it in the indicator + submit button.
-    function checkFile() {
-      const file = videoEl.files[0];
-      if (!file) {
-        fileOk = true;
-        fileInfoEl.hidden = true;
-        updateSubmitState();
-        return;
-      }
-      const dot = file.name.lastIndexOf('.');
-      const ext = dot >= 0 ? file.name.slice(dot).toLowerCase() : '';
-      fileInfoEl.hidden = false;
-      if (!allowedExtensions.includes(ext)) {
-        fileOk = false;
-        fileInfoEl.className = 'file-info bad';
-        fileInfoEl.textContent = `✕ Unsupported type "${ext || 'unknown'}" — allowed: ${allowedExtensions.join(', ')}`;
-      } else if (file.size > maxVideoBytes) {
-        fileOk = false;
-        fileInfoEl.className = 'file-info bad';
-        fileInfoEl.textContent = `✕ ${file.name} is ${formatBytes(file.size)} — exceeds the ${formatBytes(maxVideoBytes)} limit`;
-      } else {
-        fileOk = true;
-        fileInfoEl.className = 'file-info ok';
-        fileInfoEl.textContent = `✓ ${file.name} · ${formatBytes(file.size)}`;
-      }
+    // ── Library picker ──────────────────────────────────────────────────────────
+    // The video comes from the pre-uploaded, already-transcoded library — no
+    // device upload here. Only 'ready' items are selectable.
+    function selectVideo(item) {
+      libraryIdEl.value = item.id;
+      chooseVideoText.textContent = item.name;
+      chooseVideoBtn.classList.add('chosen');
+      selectedVideoEl.hidden = false;
+      selectedVideoEl.textContent = `✓ ${item.name} · ${formatBytes(item.sizeBytes)}`;
       updateSubmitState();
     }
 
-    function updateSubmitState() {
-      submitBtn.disabled = !connected || !fileOk;
+    function modalMessage(text, html) {
+      const p = document.createElement('p');
+      p.className = 'modal-empty';
+      if (html) p.innerHTML = html; else p.textContent = text;
+      modalBody.replaceChildren(p);
     }
 
-    videoEl.addEventListener('change', checkFile);
+    function renderVideoList(items) {
+      const ready = items.filter((it) => it.status === 'ready');
+      if (!ready.length) {
+        modalMessage(null, 'No ready videos yet. <a href="/videos">Upload videos →</a>');
+        return;
+      }
+      const list = document.createElement('div');
+      list.className = 'vid-list';
+      for (const it of ready) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'vid-item';
+        const info = document.createElement('div');
+        const n = document.createElement('div');
+        n.className = 'n';
+        n.textContent = it.name;
+        const m = document.createElement('div');
+        m.className = 'm';
+        m.textContent = `${formatBytes(it.sizeBytes)} · added ${new Date(it.createdAt).toLocaleDateString()}`;
+        info.append(n, m);
+        const pick = document.createElement('span');
+        pick.className = 'chev';
+        pick.textContent = 'Select';
+        btn.append(info, pick);
+        btn.addEventListener('click', () => { selectVideo(it); closeModal(); });
+        list.appendChild(btn);
+      }
+      modalBody.replaceChildren(list);
+    }
+
+    async function openModal() {
+      videoModal.classList.add('open');
+      modalMessage('Loading…');
+      try {
+        renderVideoList(await (await fetch('/api/library')).json());
+      } catch {
+        modalMessage('Could not load your videos.');
+      }
+    }
+    function closeModal() { videoModal.classList.remove('open'); }
+
+    chooseVideoBtn.addEventListener('click', openModal);
+    modalClose.addEventListener('click', closeModal);
+    videoModal.addEventListener('click', (e) => { if (e.target === videoModal) closeModal(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
 
     async function checkConnection() {
       try {
@@ -402,29 +471,41 @@
       }
     }
 
+    function resetVideoSelection() {
+      libraryIdEl.value = '';
+      chooseVideoText.textContent = 'Choose from library…';
+      chooseVideoBtn.classList.remove('chosen');
+      selectedVideoEl.hidden = true;
+      selectedVideoEl.textContent = '';
+    }
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       if (!connected) { alert('Connect your Zoom account first.'); return; }
       const startTime = document.getElementById('startTime').value;
-      const file = videoEl.files[0];
+      const libraryId = libraryIdEl.value;
       if (!startTime) { alert('Pick a start time.'); return; }
-      if (!file) { alert('Choose a video file.'); return; }
-      if (!fileOk) { alert('That video can’t be used — see the message under the file picker.'); return; }
+      if (!libraryId) { alert('Choose a video from your library.'); return; }
 
-      const fd = new FormData();
-      fd.append('topic', document.getElementById('topic').value.trim());
-      fd.append('startTime', startTime);
-      fd.append('durationMinutes', document.getElementById('durationMinutes').value || '30');
-      fd.append('endBehavior', document.getElementById('endBehavior').value);
-      fd.append('video', file);
+      const payload = {
+        topic: document.getElementById('topic').value.trim(),
+        startTime,
+        durationMinutes: Number(document.getElementById('durationMinutes').value || '30'),
+        endBehavior: document.getElementById('endBehavior').value,
+        libraryId,
+      };
 
       submitBtn.disabled = true;
-      submitBtn.textContent = 'Uploading…';
+      submitBtn.textContent = 'Scheduling…';
       try {
-        const res = await fetch('/api/schedule', { method: 'POST', body: fd });
+        const res = await fetch('/api/schedule', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
         const data = await res.json();
         if (!res.ok) { alert('Schedule failed: ' + (data.error || res.status)); }
-        else { form.reset(); document.getElementById('durationMinutes').value = '30'; checkFile(); }
+        else { form.reset(); resetVideoSelection(); document.getElementById('durationMinutes').value = '30'; }
       } catch (err) {
         alert('Schedule failed: ' + err.message);
       } finally {
@@ -434,7 +515,6 @@
       }
     });
 
-    loadConfig();
     checkConnection();
     loadJobs();
     setInterval(() => { checkConnection(); loadJobs(); }, REFRESH_INTERVAL_MS);

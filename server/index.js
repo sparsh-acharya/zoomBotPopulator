@@ -35,7 +35,7 @@ import {
     remove as removeJob,
 } from './scheduler.js';
 import { startTunnel } from './tunnel.js';
-import { transcodeToWebm } from './transcode.js';
+import * as library from './library.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -58,11 +58,6 @@ function deleteUploadFile(filePath) {
     });
 }
 
-// Remove a just-uploaded file when the request fails before a job owns it.
-function cleanupOrphan(req) {
-    if (req.file?.path) deleteUploadFile(req.file.path);
-}
-
 // On startup, delete every uploaded file: schedules live only in memory, so any
 // file on disk after a restart is unreferenced. Also passed a set of names to
 // keep (empty at boot) for future-proofing if persistence is added.
@@ -82,21 +77,25 @@ function sweepUploads(keep = new Set()) {
     if (removed) console.log(`[Uploads] Swept ${removed} orphaned file(s) on startup`);
 }
 
-// ── Video upload (multer, disk storage) ───────────────────────────────────────
+// ── Library video upload (multer, disk storage) ───────────────────────────────
+// Raw uploads are staged in the library dir as "<id>.orig<ext>"; the library
+// worker (server/library.js) transcodes each to "<id>.webm" and deletes the raw.
+// `.array` so one submit can queue several videos at once.
 const ALLOWED_VIDEO_EXT = new Set(['.mp4', '.webm', '.ogg', '.mov', '.m4v']);
 const MAX_VIDEO_BYTES = 500 * 1024 * 1024; // 500 MB
-const uploadStorage = multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
+const MAX_UPLOAD_FILES = 20; // videos per upload request
+const libraryStorage = multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, library.LIBRARY_DIR),
     filename: (_req, file, cb) => {
         const ext = path.extname(file.originalname).toLowerCase();
-        cb(null, `${uuidv4()}${ALLOWED_VIDEO_EXT.has(ext) ? ext : '.mp4'}`);
+        cb(null, `${uuidv4()}.orig${ALLOWED_VIDEO_EXT.has(ext) ? ext : '.mp4'}`);
     },
 });
-const uploadVideo = multer({
-    storage: uploadStorage,
-    limits: { fileSize: MAX_VIDEO_BYTES },
+const uploadLibraryVideos = multer({
+    storage: libraryStorage,
+    limits: { fileSize: MAX_VIDEO_BYTES, files: MAX_UPLOAD_FILES },
     fileFilter: (_req, file, cb) => cb(null, ALLOWED_VIDEO_EXT.has(path.extname(file.originalname).toLowerCase())),
-}).single('video');
+}).array('video', MAX_UPLOAD_FILES);
 
 const PORT = process.env.PORT || 3000;
 const ZOOM_SDK_KEY = process.env.ZOOM_SDK_KEY;
@@ -178,6 +177,9 @@ app.use((req, res, next) => {
 // load fine under COEP credentialless without extra CORP headers.
 app.use('/uploads', express.static(UPLOADS_DIR));
 
+// Persistent library videos, served the same same-origin way as /uploads.
+app.use('/library', express.static(library.LIBRARY_DIR));
+
 app.use(express.static(PUBLIC_DIR));
 
 // Clean URLs, mirroring the nginx rewrites on the VM (deploy/nginx/*.conf) so the
@@ -187,6 +189,7 @@ const CLEAN_PAGES = {
     '/home': 'dashboard.html',
     '/schedule': 'schedule.html',
     '/history': 'history.html',
+    '/videos': 'library.html',
     '/host-bot': 'host-bot.html',
 };
 app.get('/', (_req, res) => res.redirect('/home'));
@@ -386,82 +389,87 @@ app.get('/api/config', (_req, res) => {
     });
 });
 
-// ── POST /api/schedule ────────────────────────────────────────────────────────
-// multipart: a video file + { topic, startTime, durationMinutes }. Creates a
-// Zoom meeting owned by the connected user and arms a job to start it on time.
-app.post('/api/schedule', (req, res) => {
-    uploadVideo(req, res, async (uploadErr) => {
+// ── Video library ─────────────────────────────────────────────────────────────
+// POST accepts one or more videos, saves them, and returns immediately with
+// `queued` items — transcoding to WebM happens in a background worker, so the
+// caller never waits and can keep queuing more.
+app.post('/api/library', (req, res) => {
+    uploadLibraryVideos(req, res, (uploadErr) => {
         if (uploadErr) {
             return res.status(400).json({ error: `Upload failed: ${uploadErr.message}` });
         }
-        try {
-            if (!isConnected()) {
-                cleanupOrphan(req);
-                return res.status(401).json({ error: 'Connect your Zoom account first' });
-            }
-            if (!req.file) {
-                return res.status(400).json({ error: 'A video file is required (mp4/webm/mov)' });
-            }
-            const topic = String(req.body?.topic ?? '').trim() || 'Scheduled presentation';
-            const when = new Date(String(req.body?.startTime ?? ''));
-            if (Number.isNaN(when.getTime())) {
-                cleanupOrphan(req);
-                return res.status(400).json({ error: 'Invalid start time' });
-            }
-            const durationMinutes = Number(req.body?.durationMinutes);
-            if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
-                cleanupOrphan(req);
-                return res.status(400).json({ error: 'durationMinutes must be a positive number' });
-            }
-            // How the bot behaves once the clip finishes: loop/hold until the
-            // duration elapses, or end the meeting immediately.
-            const endBehavior = END_BEHAVIORS.has(req.body?.endBehavior) ? req.body.endBehavior : 'loop';
-
-            // PMI mode targets the host's persistent Personal Meeting room (always
-            // startable); otherwise create a fresh one-off scheduled meeting.
-            const meeting = USE_PMI
-                ? await getPmiMeeting()
-                : await createMeeting({ topic, startTime: when.toISOString(), durationMinutes });
-            console.log(
-                `[Schedule] Using meeting ${meeting.meetingNumber} (pmi=${USE_PMI})`
-            );
-
-            // Transcode to WebM (VP8+Opus, <=720p30) so the presenter bot's
-            // bundled Chromium can actually decode it — it has no H.264/AAC. On
-            // any failure (e.g. ffmpeg not installed in local dev) we fall back
-            // to the original upload so scheduling still succeeds.
-            let videoFilename = req.file.filename;
-            try {
-                const webmPath = await transcodeToWebm(req.file.path);
-                const webmName = path.basename(webmPath);
-                if (webmName !== videoFilename) {
-                    deleteUploadFile(req.file.path); // keep only the playable .webm
-                    videoFilename = webmName;
-                }
-                console.log(`[Schedule] Transcoded upload → ${videoFilename}`);
-            } catch (err) {
-                console.warn(`[Schedule] Transcode failed, using original file: ${err.message}`);
-            }
-
-            const job = schedule({
-                topic,
-                startTime: when.toISOString(),
-                durationMinutes,
-                endBehavior,
-                videoUrl: `/uploads/${videoFilename}`,
-                meetingNumber: meeting.meetingNumber,
-                password: meeting.password,
-                joinUrl: meeting.joinUrl,
-            });
-
-            return res.json(job);
-        } catch (err) {
-            // e.g. createMeeting threw — the file is now an orphan, so remove it.
-            cleanupOrphan(req);
-            console.error('[Server] /api/schedule error:', err.message);
-            return res.status(500).json({ error: err.message });
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({ error: 'At least one video file is required (mp4/webm/mov)' });
         }
+        return res.json({ items: library.addUploads(req.files) });
     });
+});
+
+app.get('/api/library', (_req, res) => res.json(library.listItems()));
+
+app.delete('/api/library/:id', (req, res) => {
+    const ok = library.deleteItem(req.params.id);
+    if (!ok) return res.status(404).json({ error: 'Video not found' });
+    return res.json({ success: true });
+});
+
+// ── POST /api/schedule ────────────────────────────────────────────────────────
+// JSON: { topic, startTime, durationMinutes, endBehavior, libraryId }. The video
+// is picked from the pre-uploaded, already-transcoded library — no upload here.
+// Creates a Zoom meeting owned by the connected user and arms a job to start it.
+app.post('/api/schedule', async (req, res) => {
+    try {
+        if (!isConnected()) {
+            return res.status(401).json({ error: 'Connect your Zoom account first' });
+        }
+
+        // The chosen library video must exist and have finished transcoding.
+        const libraryId = String(req.body?.libraryId ?? '').trim();
+        const video = library.getReadyItem(libraryId);
+        if (!video) {
+            return res.status(400).json({ error: 'Select a ready video from your library' });
+        }
+
+        const topic = String(req.body?.topic ?? '').trim() || 'Scheduled presentation';
+        const when = new Date(String(req.body?.startTime ?? ''));
+        if (Number.isNaN(when.getTime())) {
+            return res.status(400).json({ error: 'Invalid start time' });
+        }
+        const durationMinutes = Number(req.body?.durationMinutes);
+        if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
+            return res.status(400).json({ error: 'durationMinutes must be a positive number' });
+        }
+        // How the bot behaves once the clip finishes: loop/hold until the
+        // duration elapses, or end the meeting immediately.
+        const endBehavior = END_BEHAVIORS.has(req.body?.endBehavior) ? req.body.endBehavior : 'loop';
+
+        // PMI mode targets the host's persistent Personal Meeting room (always
+        // startable); otherwise create a fresh one-off scheduled meeting.
+        const meeting = USE_PMI
+            ? await getPmiMeeting()
+            : await createMeeting({ topic, startTime: when.toISOString(), durationMinutes });
+        console.log(
+            `[Schedule] Using meeting ${meeting.meetingNumber} (pmi=${USE_PMI})`
+        );
+
+        const job = schedule({
+            topic,
+            startTime: when.toISOString(),
+            durationMinutes,
+            endBehavior,
+            // Library videos are shared and persistent — reference, never copy or
+            // delete. The /library/ prefix keeps onRemove from touching the file.
+            videoUrl: `/library/${video.webmFile}`,
+            meetingNumber: meeting.meetingNumber,
+            password: meeting.password,
+            joinUrl: meeting.joinUrl,
+        });
+
+        return res.json(job);
+    } catch (err) {
+        console.error('[Server] /api/schedule error:', err.message);
+        return res.status(500).json({ error: err.message });
+    }
 });
 
 app.get('/api/schedule', (_req, res) => res.json(listJobs()));
@@ -495,9 +503,15 @@ app.post('/api/schedule/:id/end', async (req, res) => {
 // Lets the scheduler prune a running job once its bot has left/ended.
 setBotStatusResolver(getBotStatus);
 
-// Delete a job's uploaded video whenever the job leaves the store (ended,
-// canceled, or pruned after the meeting finished).
-onRemove((job) => deleteUploadFile(uploadPathFromUrl(job.videoUrl)));
+// Delete a job's video whenever the job leaves the store (ended, canceled, or
+// pruned after the meeting finished) — but ONLY ephemeral /uploads/ files.
+// Library videos (/library/...) are shared and persistent, so they are left
+// alone even if several jobs referenced the same one.
+onRemove((job) => {
+    if (job.videoUrl?.startsWith('/uploads/')) {
+        deleteUploadFile(uploadPathFromUrl(job.videoUrl));
+    }
+});
 
 onFire(async (job) => {
     // Pre-flight: a host-role (role=1) join STARTS the meeting under the account
@@ -576,6 +590,9 @@ onFire(async (job) => {
 
 // Schedules don't survive a restart, so any leftover upload is unreferenced.
 sweepUploads();
+
+// Load the persistent video library (creates the dir, reconciles the manifest).
+library.init();
 
 app.listen(PORT, '0.0.0.0', async () => {
     const tunnelUrl = await startTunnel(PORT);

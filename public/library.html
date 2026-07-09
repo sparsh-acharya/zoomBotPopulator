@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zoom Bot Platform — Video library</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --primary:#cc785c; --primary-active:#a9583e;
+      --ink:#faf9f5; --body:#cfccc4; --body-strong:#e8e5dd; --muted:#a09d96; --muted-soft:#7c7972;
+      --hairline:#34322e;
+      --canvas:#181715; --surface-card:#252320; --surface-cream-strong:#312f2a;
+      --on-primary:#ffffff; --success:#5db872; --warning:#d4a017; --amber:#e8a55a; --error:#c64545;
+      --serif:'Cormorant Garamond',Garamond,'Times New Roman',serif;
+      --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+      --mono:'JetBrains Mono',ui-monospace,monospace;
+      --r-md:8px; --r-lg:12px; --r-pill:9999px; --control-h:44px;
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--canvas); color:var(--body); font-family:var(--sans); font-size:16px; line-height:1.55; -webkit-font-smoothing:antialiased; }
+
+    .topnav { height:64px; display:flex; align-items:center; justify-content:space-between; padding:0 32px; border-bottom:1px solid var(--hairline); }
+    .brand { display:flex; align-items:center; gap:10px; font-weight:600; font-size:18px; color:var(--ink); letter-spacing:-0.2px; }
+    .brand .spike { width:18px; height:18px; color:var(--ink); }
+    .topnav nav { display:flex; align-items:center; gap:8px; }
+    .nav-link { font-size:14px; font-weight:500; color:var(--ink); text-decoration:none; padding:8px 14px; border-radius:var(--r-md); }
+    .nav-link:hover, .nav-link.active { background:var(--surface-card); }
+
+    .wrap { max-width:1100px; margin:0 auto; padding:48px 32px 64px; }
+    .hero { margin-bottom:28px; max-width:760px; }
+    .eyebrow { font-size:12px; font-weight:500; letter-spacing:1.5px; text-transform:uppercase; color:var(--muted); }
+    .hero h1 { font-family:var(--serif); font-weight:500; font-size:44px; line-height:1.08; letter-spacing:-0.02em; color:var(--ink); margin:14px 0 12px; }
+    .hero p { font-size:18px; color:var(--body-strong); margin:0; }
+
+    .layout { display:grid; grid-template-columns:minmax(0,440px) minmax(0,1fr); gap:24px; align-items:start; }
+    @media (max-width: 880px) { .layout { grid-template-columns:1fr; } .hero h1 { font-size:34px; } }
+
+    .card { border-radius:var(--r-lg); padding:28px; }
+    .card.form-card { background:var(--surface-card); }
+    .card-head h2 { font-family:var(--serif); font-weight:500; font-size:26px; color:var(--ink); margin:0 0 6px; }
+    .card-head p { font-size:14px; color:var(--muted); margin:0 0 18px; }
+
+    form { display:grid; gap:16px; }
+    label { display:flex; flex-direction:column; gap:7px; font-size:13px; font-weight:500; color:var(--muted); }
+    input[type="file"] { font-size:14px; color:var(--body); background:var(--canvas); border:1px dashed var(--hairline); border-radius:var(--r-md); padding:12px; width:100%; }
+    .file-info { font-size:13px; margin-top:-6px; display:flex; flex-direction:column; gap:3px; }
+    .file-info.ok { color:var(--success); }
+    .file-info.bad { color:#ec9595; }
+
+    .btn-primary { font-size:14px; font-weight:500; color:var(--on-primary); background:var(--primary); border:0; border-radius:var(--r-md); height:44px; padding:0 22px; cursor:pointer; width:100%; font-family:var(--sans); }
+    .btn-primary:hover { background:var(--primary-active); }
+    .btn-primary:disabled { opacity:0.5; cursor:not-allowed; }
+    .btn-danger { font-size:13px; font-weight:500; color:#ec9595; background:var(--canvas); border:1px solid rgba(198,69,69,0.5); border-radius:var(--r-md); height:36px; padding:0 14px; cursor:pointer; font-family:var(--sans); }
+    .btn-danger:hover { background:rgba(198,69,69,0.15); }
+
+    .items { display:grid; gap:14px; }
+    .item { background:var(--surface-card); border:1px solid var(--hairline); border-radius:var(--r-lg); padding:18px 20px; }
+    .item .top { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+    .item .title { font-size:16px; font-weight:600; color:var(--ink); line-height:1.35; word-break:break-word; }
+    .item .meta { display:flex; flex-wrap:wrap; gap:6px 16px; margin-top:10px; font-size:13px; color:var(--muted); }
+    .item .actions { display:flex; justify-content:flex-end; margin-top:14px; padding-top:14px; border-top:1px solid var(--hairline); }
+    .item .err { color:#ec9595; font-size:13px; margin-top:10px; }
+    .empty { color:var(--muted); font-size:15px; }
+
+    .badge { display:inline-block; padding:4px 11px; border-radius:var(--r-pill); font-size:11px; font-weight:600; letter-spacing:0.6px; text-transform:uppercase; white-space:nowrap; }
+    .s-queued { background:rgba(212,160,23,0.20); color:#e6c24f; }
+    .s-transcoding { background:rgba(232,165,90,0.22); color:#f1bd81; }
+    .s-ready { background:rgba(93,184,114,0.22); color:#7fe0a1; }
+    .s-error { background:rgba(198,69,69,0.22); color:#ec9595; }
+
+    .spin { display:inline-block; width:11px; height:11px; margin-right:6px; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; vertical-align:-1px; animation:spin .7s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .note { font-size:13px; color:var(--muted); margin-top:12px; }
+    .note a { color:var(--amber); text-decoration:none; }
+    .note a:hover { text-decoration:underline; }
+  </style>
+</head>
+<body>
+  <header class="topnav">
+    <div class="brand">
+      <svg class="spike" viewBox="0 0 100 100" aria-hidden="true">
+        <g stroke="currentColor" stroke-width="9" stroke-linecap="round">
+          <line x1="50" y1="11" x2="50" y2="89" /><line x1="11" y1="50" x2="89" y2="50" />
+          <line x1="22.4" y1="22.4" x2="77.6" y2="77.6" /><line x1="77.6" y1="22.4" x2="22.4" y2="77.6" />
+        </g>
+      </svg>
+      Zoom Bot Platform - Videos
+    </div>
+    <nav>
+      <a class="nav-link" href="/home">Dashboard</a>
+      <a class="nav-link" href="/schedule">Schedule</a>
+      <a class="nav-link active" href="/videos">Videos</a>
+      <a class="nav-link" href="/history">History</a>
+    </nav>
+  </header>
+
+  <div class="wrap">
+    <section class="hero">
+      <span class="eyebrow">Video library</span>
+      <h1>Upload once, reuse anywhere.</h1>
+      <p>Upload your presentation videos here. Each is transcoded to a bot-ready format in the background, then it's available to pick when you schedule a presenter bot.</p>
+    </section>
+
+    <div class="layout">
+      <section class="card form-card">
+        <div class="card-head">
+          <h2>Add videos</h2>
+          <p>Select one or more files — uploads keep running in the background, so you can add more right away.</p>
+        </div>
+        <form id="uploadForm">
+          <label id="videoLabel">Video files (mp4 / webm / mov)
+            <input id="video" type="file" multiple accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.mov,.m4v" />
+          </label>
+          <div id="fileInfo" class="file-info" hidden></div>
+          <button type="submit" class="btn-primary" id="submitBtn" disabled>Upload</button>
+        </form>
+        <p class="note" id="uploadNote" hidden></p>
+      </section>
+
+      <section class="card" style="padding:0;">
+        <div class="card-head"><h2>Your videos</h2></div>
+        <div id="items" class="items"><p class="empty">No videos yet.</p></div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const REFRESH_INTERVAL_MS = 3000;
+    const form = document.getElementById('uploadForm');
+    const submitBtn = document.getElementById('submitBtn');
+    const videoEl = document.getElementById('video');
+    const videoLabel = document.getElementById('videoLabel');
+    const fileInfoEl = document.getElementById('fileInfo');
+    const uploadNote = document.getElementById('uploadNote');
+    const itemsEl = document.getElementById('items');
+
+    let maxVideoBytes = 500 * 1024 * 1024;
+    let allowedExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.m4v'];
+    let filesOk = false;
+    let inFlight = 0; // active upload requests
+
+    function formatBytes(n) {
+      if (n == null) return '—';
+      if (n >= 1024 * 1024 * 1024) return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+      if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+      if (n >= 1024) return (n / 1024).toFixed(0) + ' KB';
+      return n + ' B';
+    }
+
+    async function loadConfig() {
+      try {
+        const cfg = await (await fetch('/api/config')).json();
+        if (cfg.maxVideoBytes) maxVideoBytes = cfg.maxVideoBytes;
+        if (Array.isArray(cfg.allowedExtensions)) allowedExtensions = cfg.allowedExtensions;
+      } catch { /* keep defaults */ }
+      videoLabel.firstChild.textContent =
+        `Video files (${allowedExtensions.map((e) => e.replace('.', '')).join(' / ')}, ≤ ${formatBytes(maxVideoBytes)} each) `;
+    }
+
+    function extOf(name) {
+      const dot = name.lastIndexOf('.');
+      return dot >= 0 ? name.slice(dot).toLowerCase() : '';
+    }
+
+    // Validate every picked file; reflect the result under the picker.
+    function checkFiles() {
+      const files = [...videoEl.files];
+      if (!files.length) {
+        filesOk = false;
+        fileInfoEl.hidden = true;
+        updateSubmitState();
+        return;
+      }
+      const problems = [];
+      for (const f of files) {
+        const ext = extOf(f.name);
+        if (!allowedExtensions.includes(ext)) problems.push(`✕ ${f.name}: unsupported type "${ext || 'unknown'}"`);
+        else if (f.size > maxVideoBytes) problems.push(`✕ ${f.name}: ${formatBytes(f.size)} exceeds the ${formatBytes(maxVideoBytes)} limit`);
+      }
+      fileInfoEl.hidden = false;
+      fileInfoEl.replaceChildren();
+      if (problems.length) {
+        filesOk = false;
+        fileInfoEl.className = 'file-info bad';
+        for (const p of problems) { const d = document.createElement('div'); d.textContent = p; fileInfoEl.appendChild(d); }
+      } else {
+        filesOk = true;
+        fileInfoEl.className = 'file-info ok';
+        const d = document.createElement('div');
+        d.textContent = `✓ ${files.length} file${files.length > 1 ? 's' : ''} ready · ${formatBytes(files.reduce((s, f) => s + f.size, 0))} total`;
+        fileInfoEl.appendChild(d);
+      }
+      updateSubmitState();
+    }
+
+    function updateSubmitState() {
+      submitBtn.disabled = !filesOk;
+    }
+
+    videoEl.addEventListener('change', checkFiles);
+
+    function badge(status) {
+      const b = document.createElement('span');
+      b.className = `badge s-${status}`;
+      if (status === 'transcoding') {
+        const s = document.createElement('span');
+        s.className = 'spin';
+        b.appendChild(s);
+      }
+      b.appendChild(document.createTextNode(status));
+      return b;
+    }
+
+    function renderItems(items) {
+      itemsEl.replaceChildren();
+      if (!items.length) {
+        const p = document.createElement('p');
+        p.className = 'empty';
+        p.textContent = 'No videos yet.';
+        itemsEl.appendChild(p);
+        return;
+      }
+      for (const it of items) {
+        const card = document.createElement('div');
+        card.className = 'item';
+
+        const top = document.createElement('div');
+        top.className = 'top';
+        const title = document.createElement('div');
+        title.className = 'title';
+        title.textContent = it.name;
+        top.append(title, badge(it.status));
+        card.appendChild(top);
+
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        const size = document.createElement('span');
+        size.textContent = formatBytes(it.sizeBytes);
+        const when = document.createElement('span');
+        when.textContent = 'Added ' + new Date(it.createdAt).toLocaleString();
+        meta.append(size, when);
+        card.appendChild(meta);
+
+        if (it.error) {
+          const e = document.createElement('div');
+          e.className = 'err';
+          e.textContent = it.error;
+          card.appendChild(e);
+        }
+
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+        const del = document.createElement('button');
+        del.className = 'btn-danger';
+        del.textContent = 'Delete';
+        del.addEventListener('click', () => deleteItem(it.id, it.name));
+        actions.appendChild(del);
+        card.appendChild(actions);
+
+        itemsEl.appendChild(card);
+      }
+    }
+
+    async function loadItems() {
+      try {
+        const res = await fetch('/api/library');
+        renderItems(await res.json());
+      } catch (err) {
+        console.error('loadItems failed:', err);
+      }
+    }
+
+    async function deleteItem(id, name) {
+      if (!confirm(`Delete "${name}" from your library?`)) return;
+      await fetch(`/api/library/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+      await loadItems();
+    }
+
+    function setNote(msg) {
+      uploadNote.hidden = !msg;
+      uploadNote.textContent = msg || '';
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const files = [...videoEl.files];
+      if (!files.length || !filesOk) return;
+
+      const fd = new FormData();
+      for (const f of files) fd.append('video', f);
+
+      // Reset the picker immediately so the user can queue another batch while
+      // this one uploads/transcodes in the background.
+      form.reset();
+      checkFiles();
+      inFlight += 1;
+      setNote(`Uploading ${files.length} video${files.length > 1 ? 's' : ''}…`);
+
+      try {
+        const res = await fetch('/api/library', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok) { alert('Upload failed: ' + (data.error || res.status)); }
+      } catch (err) {
+        alert('Upload failed: ' + err.message);
+      } finally {
+        inFlight -= 1;
+        if (inFlight === 0) setNote('');
+        await loadItems();
+      }
+    });
+
+    loadConfig();
+    loadItems();
+    setInterval(loadItems, REFRESH_INTERVAL_MS);
+  </script>
+</body>
+</html>
