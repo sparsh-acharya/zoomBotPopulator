@@ -21,6 +21,7 @@ import {
     getMe,
     getZak,
     getMeeting,
+    getPmiMeeting,
     createMeeting,
 } from './zoomApi.js';
 import {
@@ -416,14 +417,13 @@ app.post('/api/schedule', (req, res) => {
             // duration elapses, or end the meeting immediately.
             const endBehavior = END_BEHAVIORS.has(req.body?.endBehavior) ? req.body.endBehavior : 'loop';
 
-            const meeting = await createMeeting({
-                topic,
-                startTime: when.toISOString(),
-                durationMinutes,
-                usePmi: USE_PMI,
-            });
+            // PMI mode targets the host's persistent Personal Meeting room (always
+            // startable); otherwise create a fresh one-off scheduled meeting.
+            const meeting = USE_PMI
+                ? await getPmiMeeting()
+                : await createMeeting({ topic, startTime: when.toISOString(), durationMinutes });
             console.log(
-                `[Schedule] Meeting ${meeting.meetingNumber} created (use_pmi=${USE_PMI})`
+                `[Schedule] Using meeting ${meeting.meetingNumber} (pmi=${USE_PMI})`
             );
 
             // Transcode to WebM (VP8+Opus, <=720p30) so the presenter bot's

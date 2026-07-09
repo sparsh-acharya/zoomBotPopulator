@@ -231,3 +231,29 @@ export async function createMeeting({ topic, startTime, durationMinutes, timezon
     startTime: data.start_time || startTime,
   };
 }
+
+/**
+ * Resolve the connected user's Personal Meeting ID (PMI) as a startable target.
+ * Unlike createMeeting({usePmi:true}) — whose response `id` is still a fresh
+ * unique meeting — this returns the actual PMI number and its passcode, i.e. the
+ * persistent room that's always startable (never `status=waiting`).
+ * @returns {Promise<{meetingNumber:string,password:string,joinUrl:string,startTime:string}>}
+ */
+export async function getPmiMeeting() {
+  const me = await apiGet('/users/me');
+  const pmi = me.pmi ? String(me.pmi) : '';
+  if (!pmi) throw new Error('getPmiMeeting: this account has no PMI');
+
+  // Fetch the PMI room's passcode. Host-start uses the ZAK so the passcode may
+  // not be strictly required, but include it when available for correctness.
+  let password = '';
+  let joinUrl = `https://zoom.us/j/${pmi}`;
+  try {
+    const m = await apiGet(`/meetings/${pmi}`);
+    password = m.password || '';
+    joinUrl = m.join_url || joinUrl;
+  } catch {
+    // No retrievable PMI meeting object / passcode — proceed with the number.
+  }
+  return { meetingNumber: pmi, password, joinUrl, startTime: new Date().toISOString() };
+}
