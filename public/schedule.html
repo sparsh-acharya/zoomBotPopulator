@@ -479,6 +479,19 @@
       selectedVideoEl.textContent = '';
     }
 
+    // Read a failed response without assuming JSON — a proxy (nginx/Cloudflare)
+    // can answer with an HTML error page, and res.json() on that throws the
+    // confusing "Unexpected token '<'". Returns a readable message.
+    async function errorMessage(res) {
+      let body = '';
+      try { body = await res.text(); } catch { /* ignore */ }
+      try {
+        const j = JSON.parse(body);
+        if (j && j.error) return j.error;
+      } catch { /* body wasn't JSON (e.g. an HTML error page) */ }
+      return `server returned HTTP ${res.status}.`;
+    }
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       if (!connected) { alert('Connect your Zoom account first.'); return; }
@@ -503,8 +516,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        const data = await res.json();
-        if (!res.ok) { alert('Schedule failed: ' + (data.error || res.status)); }
+        if (!res.ok) { alert('Schedule failed: ' + await errorMessage(res)); }
         else { form.reset(); resetVideoSelection(); document.getElementById('durationMinutes').value = '30'; }
       } catch (err) {
         alert('Schedule failed: ' + err.message);

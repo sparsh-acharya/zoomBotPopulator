@@ -137,10 +137,16 @@
     const uploadNote = document.getElementById('uploadNote');
     const itemsEl = document.getElementById('items');
 
-    let maxVideoBytes = 500 * 1024 * 1024;
+    // Files are uploaded in chunks, so the per-file ceiling is the server's total
+    // cap (not Cloudflare's ~100 MB per-request limit, which chunking sidesteps).
+    let maxUploadBytes = 4 * 1024 * 1024 * 1024;
+    let chunkBytes = 80 * 1024 * 1024; // each chunk stays well under the 100 MB proxy cap
     let allowedExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.m4v'];
     let filesOk = false;
-    let inFlight = 0; // active upload requests
+
+    // In-progress uploads, keyed by a per-file token, for the status note.
+    const activeUploads = new Map(); // token -> { name, pct }
+    let uploadSeq = 0;
 
     function formatBytes(n) {
       if (n == null) return '—';
@@ -153,11 +159,12 @@
     async function loadConfig() {
       try {
         const cfg = await (await fetch('/api/config')).json();
-        if (cfg.maxVideoBytes) maxVideoBytes = cfg.maxVideoBytes;
+        if (cfg.maxUploadBytes) maxUploadBytes = cfg.maxUploadBytes;
+        if (cfg.uploadChunkBytes) chunkBytes = cfg.uploadChunkBytes;
         if (Array.isArray(cfg.allowedExtensions)) allowedExtensions = cfg.allowedExtensions;
       } catch { /* keep defaults */ }
       videoLabel.firstChild.textContent =
-        `Video files (${allowedExtensions.map((e) => e.replace('.', '')).join(' / ')}, ≤ ${formatBytes(maxVideoBytes)} each) `;
+        `Video files (${allowedExtensions.map((e) => e.replace('.', '')).join(' / ')}, ≤ ${formatBytes(maxUploadBytes)} each) `;
     }
 
     function extOf(name) {
@@ -178,7 +185,7 @@
       for (const f of files) {
         const ext = extOf(f.name);
         if (!allowedExtensions.includes(ext)) problems.push(`✕ ${f.name}: unsupported type "${ext || 'unknown'}"`);
-        else if (f.size > maxVideoBytes) problems.push(`✕ ${f.name}: ${formatBytes(f.size)} exceeds the ${formatBytes(maxVideoBytes)} limit`);
+        else if (f.size > maxUploadBytes) problems.push(`✕ ${f.name}: ${formatBytes(f.size)} exceeds the ${formatBytes(maxUploadBytes)} limit`);
       }
       fileInfoEl.hidden = false;
       fileInfoEl.replaceChildren();
@@ -279,37 +286,96 @@
       await loadItems();
     }
 
-    function setNote(msg) {
-      uploadNote.hidden = !msg;
-      uploadNote.textContent = msg || '';
+    // Render the running-upload note from all active uploads.
+    function renderUploadNote() {
+      if (activeUploads.size === 0) { uploadNote.hidden = true; uploadNote.textContent = ''; return; }
+      const parts = [];
+      for (const u of activeUploads.values()) parts.push(`${u.name} (${u.pct}%)`);
+      uploadNote.hidden = false;
+      uploadNote.textContent = 'Uploading — ' + parts.join(', ');
     }
 
-    form.addEventListener('submit', async (e) => {
+    // Turn a failed response into a readable message, tolerating non-JSON bodies.
+    // Our server always answers with JSON {error}, so that wins; only a proxy
+    // (Cloudflare/nginx) HTML error page falls through to the status/hint — which
+    // shouldn't happen now that chunks stay under the ~100 MB per-request cap.
+    async function errorMessage(res) {
+      let body = '';
+      try { body = await res.text(); } catch { /* ignore */ }
+      try {
+        const j = JSON.parse(body);
+        if (j && j.error) return j.error;
+      } catch { /* body wasn't JSON (e.g. an HTML error page) */ }
+      if (res.status === 413) return 'the upload was blocked by the proxy for being too large.';
+      return `server returned HTTP ${res.status}.`;
+    }
+
+    // Upload one file by slicing it into chunks that each stay under the proxy's
+    // per-request size cap. The server reassembles them, then transcodes.
+    async function uploadOneFile(file) {
+      const token = ++uploadSeq;
+      activeUploads.set(token, { name: file.name, pct: 0 });
+      renderUploadNote();
+      try {
+        // 1. Open a session.
+        const initRes = await fetch('/api/library/uploads', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: file.name, size: file.size }),
+        });
+        if (!initRes.ok) throw new Error(await errorMessage(initRes));
+        const { uploadId, chunkBytes: serverChunk } = await initRes.json();
+        const size = serverChunk || chunkBytes;
+
+        try {
+          // 2. Send the file one chunk at a time (sequential = in order on disk).
+          let offset = 0;
+          while (offset < file.size) {
+            const end = Math.min(offset + size, file.size);
+            const res = await fetch(`/api/library/uploads/${encodeURIComponent(uploadId)}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/octet-stream' },
+              body: file.slice(offset, end),
+            });
+            if (!res.ok) throw new Error(await errorMessage(res));
+            offset = end;
+            const u = activeUploads.get(token);
+            if (u && file.size > 0) { u.pct = Math.round((offset / file.size) * 100); renderUploadNote(); }
+          }
+
+          // 3. Finalize — the server enqueues transcoding in the background.
+          const doneRes = await fetch(`/api/library/uploads/${encodeURIComponent(uploadId)}/complete`, { method: 'POST' });
+          if (!doneRes.ok) throw new Error(await errorMessage(doneRes));
+        } catch (err) {
+          // Abandon the half-written file server-side, then surface the error.
+          fetch(`/api/library/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' }).catch(() => {});
+          throw err;
+        }
+      } finally {
+        activeUploads.delete(token);
+        renderUploadNote();
+        await loadItems();
+      }
+    }
+
+    form.addEventListener('submit', (e) => {
       e.preventDefault();
       const files = [...videoEl.files];
       if (!files.length || !filesOk) return;
-
-      const fd = new FormData();
-      for (const f of files) fd.append('video', f);
 
       // Reset the picker immediately so the user can queue another batch while
       // this one uploads/transcodes in the background.
       form.reset();
       checkFiles();
-      inFlight += 1;
-      setNote(`Uploading ${files.length} video${files.length > 1 ? 's' : ''}…`);
 
-      try {
-        const res = await fetch('/api/library', { method: 'POST', body: fd });
-        const data = await res.json();
-        if (!res.ok) { alert('Upload failed: ' + (data.error || res.status)); }
-      } catch (err) {
-        alert('Upload failed: ' + err.message);
-      } finally {
-        inFlight -= 1;
-        if (inFlight === 0) setNote('');
-        await loadItems();
-      }
+      // Upload this batch sequentially (kind to bandwidth); the handler returns
+      // right away so the page stays responsive and more can be queued.
+      (async () => {
+        for (const f of files) {
+          try { await uploadOneFile(f); }
+          catch (err) { alert(`Upload failed for ${f.name}: ${err.message}`); }
+        }
+      })();
     });
 
     loadConfig();

@@ -384,15 +384,17 @@ app.get('/api/zoom/status', async (_req, res) => {
 // Upload constraints, so the UI can validate a file before sending it.
 app.get('/api/config', (_req, res) => {
     return res.json({
-        maxVideoBytes: MAX_VIDEO_BYTES,
+        maxVideoBytes: MAX_VIDEO_BYTES,          // single-shot (multipart) per-file cap
+        maxUploadBytes: library.MAX_UPLOAD_BYTES, // chunked-upload total per-file cap
+        uploadChunkBytes: library.UPLOAD_CHUNK_BYTES,
         allowedExtensions: [...ALLOWED_VIDEO_EXT],
     });
 });
 
 // ── Video library ─────────────────────────────────────────────────────────────
-// POST accepts one or more videos, saves them, and returns immediately with
-// `queued` items — transcoding to WebM happens in a background worker, so the
-// caller never waits and can keep queuing more.
+// Single-shot upload: accepts one or more videos in one multipart request and
+// returns immediately with `queued` items. Fine for small files, but a body over
+// ~100 MB is blocked by the CDN — large files use the chunked endpoints below.
 app.post('/api/library', (req, res) => {
     uploadLibraryVideos(req, res, (uploadErr) => {
         if (uploadErr) {
@@ -403,6 +405,47 @@ app.post('/api/library', (req, res) => {
         }
         return res.json({ items: library.addUploads(req.files) });
     });
+});
+
+// Chunked upload (bypasses the CDN's ~100 MB per-request cap): open a session,
+// POST the file in chunks that each stay under the cap, then complete.
+app.post('/api/library/uploads', (req, res) => {
+    const name = String(req.body?.name ?? '').trim();
+    const size = Number(req.body?.size);
+    const ext = path.extname(name).toLowerCase();
+    if (!name || !ALLOWED_VIDEO_EXT.has(ext)) {
+        return res.status(400).json({ error: `Unsupported or missing file type — allowed: ${[...ALLOWED_VIDEO_EXT].join(', ')}` });
+    }
+    if (Number.isFinite(size) && size > library.MAX_UPLOAD_BYTES) {
+        return res.status(413).json({ error: 'File exceeds the maximum allowed size' });
+    }
+    const { uploadId } = library.beginUpload({ name });
+    return res.json({ uploadId, chunkBytes: library.UPLOAD_CHUNK_BYTES });
+});
+
+// A chunk is a raw octet-stream body (NOT JSON/multipart), streamed straight to
+// disk — express.json() ignores it, so req is still an untouched readable here.
+app.post('/api/library/uploads/:uploadId', async (req, res) => {
+    try {
+        const declared = Number(req.headers['content-length']) || 0;
+        const receivedBytes = await library.appendChunk(req.params.uploadId, req, declared);
+        return res.json({ receivedBytes });
+    } catch (err) {
+        const msg = err.message || 'Chunk upload failed';
+        const status = /unknown or expired/i.test(msg) ? 410 : /exceeds/i.test(msg) ? 413 : 400;
+        return res.status(status).json({ error: msg });
+    }
+});
+
+app.post('/api/library/uploads/:uploadId/complete', (req, res) => {
+    const item = library.completeUpload(req.params.uploadId);
+    if (!item) return res.status(400).json({ error: 'Upload session not found or empty' });
+    return res.json(item);
+});
+
+app.delete('/api/library/uploads/:uploadId', (req, res) => {
+    library.abortUpload(req.params.uploadId);
+    return res.json({ success: true });
 });
 
 app.get('/api/library', (_req, res) => res.json(library.listItems()));

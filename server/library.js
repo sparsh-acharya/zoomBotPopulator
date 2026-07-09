@@ -36,6 +36,16 @@ const items = new Map();
 const queue = [];
 let pumping = false;
 
+// ── Chunked uploads ───────────────────────────────────────────────────────────
+// Large files are uploaded in chunks so each request stays under the ~100 MB
+// per-request cap of the CDN in front of the app; the server appends them back
+// into one raw file, then feeds it into the same transcode queue.
+export const MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024; // 4 GB total per video
+export const UPLOAD_CHUNK_BYTES = 80 * 1024 * 1024;     // recommended client chunk size
+const UPLOAD_SESSION_TTL_MS = 60 * 60 * 1000;           // drop idle sessions after 1h
+// uploadId -> { id, name, filePath, receivedBytes, lastActivity }
+const uploads = new Map();
+
 // Best-effort delete; ENOENT (already gone) is fine and stays quiet.
 function safeUnlink(filePath) {
   if (!filePath) return Promise.resolve();
@@ -123,6 +133,9 @@ export function init() {
   if (swept) console.log(`[Library] Swept ${swept} orphaned file(s) on startup`);
   console.log(`[Library] Loaded ${items.size} ready video(s)`);
   persist(); // rewrite the manifest to reflect the reconciled state
+
+  // Reap abandoned chunked-upload sessions periodically.
+  setInterval(sweepUploadSessions, 10 * 60 * 1000);
 }
 
 /**
@@ -232,4 +245,101 @@ export function deleteItem(id) {
   if (item.rawPath) safeUnlink(item.rawPath);
   persist();
   return true;
+}
+
+// ── Chunked-upload API ────────────────────────────────────────────────────────
+
+/**
+ * Open a chunked-upload session. Returns an opaque uploadId the client posts
+ * chunks to. The raw file is created empty and appended to, in order.
+ * @param {{ name: string }} input
+ * @returns {{ uploadId: string }}
+ */
+export function beginUpload({ name }) {
+  fs.mkdirSync(LIBRARY_DIR, { recursive: true });
+  const id = uuidv4();
+  const uploadId = uuidv4();
+  const ext = path.extname(String(name || '')).toLowerCase() || '.mp4';
+  const filePath = path.join(LIBRARY_DIR, `${id}.orig${ext}`);
+  fs.writeFileSync(filePath, ''); // start empty; chunks append in order
+  uploads.set(uploadId, { id, name, filePath, receivedBytes: 0, lastActivity: Date.now() });
+  return { uploadId };
+}
+
+/**
+ * Append one chunk (a readable stream) to the session's raw file, in order.
+ * @param {string} uploadId
+ * @param {import('node:stream').Readable} readable
+ * @param {number} declaredBytes Content-Length of the chunk, for an early cap check
+ * @returns {Promise<number>} total bytes received so far
+ */
+export function appendChunk(uploadId, readable, declaredBytes = 0) {
+  const s = uploads.get(uploadId);
+  if (!s) return Promise.reject(new Error('Unknown or expired upload session'));
+  if (s.receivedBytes + declaredBytes > MAX_UPLOAD_BYTES) {
+    abortUpload(uploadId);
+    return Promise.reject(new Error('Upload exceeds the maximum allowed size'));
+  }
+  return new Promise((resolve, reject) => {
+    const ws = fs.createWriteStream(s.filePath, { flags: 'a' });
+    const fail = (err) => { ws.destroy(); reject(err); };
+    readable.on('error', fail);
+    ws.on('error', fail);
+    ws.on('finish', () => {
+      s.receivedBytes += ws.bytesWritten;
+      s.lastActivity = Date.now();
+      resolve(s.receivedBytes);
+    });
+    readable.pipe(ws);
+  });
+}
+
+/**
+ * Finalize a session: turn the reassembled raw file into a queued library item
+ * and kick off transcoding. Returns the public item, or null if the session is
+ * unknown or received no bytes.
+ */
+export function completeUpload(uploadId) {
+  const s = uploads.get(uploadId);
+  if (!s) return null;
+  uploads.delete(uploadId);
+  if (s.receivedBytes <= 0) {
+    safeUnlink(s.filePath);
+    return null;
+  }
+  const item = {
+    id: s.id,
+    name: s.name,
+    status: 'queued',
+    webmFile: null,
+    sizeBytes: s.receivedBytes,
+    createdAt: new Date().toISOString(),
+    error: null,
+    rawPath: s.filePath,
+  };
+  items.set(s.id, item);
+  queue.push(s.id);
+  pump();
+  return toPublic(item);
+}
+
+/** Abandon a session, deleting its partial file. @returns {boolean} */
+export function abortUpload(uploadId) {
+  const s = uploads.get(uploadId);
+  if (!s) return false;
+  uploads.delete(uploadId);
+  safeUnlink(s.filePath);
+  return true;
+}
+
+// Drop upload sessions gone idle (client vanished mid-upload) so their partial
+// files don't linger. Ready items and in-flight transcodes are unaffected.
+function sweepUploadSessions() {
+  const now = Date.now();
+  for (const [uploadId, s] of uploads) {
+    if (now - s.lastActivity > UPLOAD_SESSION_TTL_MS) {
+      uploads.delete(uploadId);
+      safeUnlink(s.filePath);
+    }
+  }
 }
