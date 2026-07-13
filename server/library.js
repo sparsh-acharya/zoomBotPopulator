@@ -64,6 +64,9 @@ function toPublic(item) {
     sizeBytes: item.sizeBytes ?? null,
     createdAt: item.createdAt,
     error: item.error || null,
+    // 0-99 while transcoding (null when unknown/not applicable) — long encodes
+    // of multi-GB files are visible in the UI instead of an opaque spinner.
+    progress: item.status === 'transcoding' ? (item.progress ?? null) : null,
   };
 }
 
@@ -179,9 +182,12 @@ async function pump() {
       if (!item || item.status !== 'queued') continue; // deleted while queued
 
       item.status = 'transcoding';
+      item.progress = 0;
       const rawPath = item.rawPath;
       try {
-        const produced = await transcodeToWebm(rawPath);
+        const produced = await transcodeToWebm(rawPath, {
+          onProgress: (pct) => { item.progress = pct; },
+        });
         const webmFile = `${id}.webm`;
         const webmPath = path.join(LIBRARY_DIR, webmFile);
         await fs.promises.rename(produced, webmPath);

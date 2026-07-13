@@ -151,6 +151,12 @@
     let allowedExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.m4v'];
     let fileOk = false;
 
+    // A 4 GB upload is ~50 sequential chunks over as much as an hour — retry
+    // transient chunk failures instead of losing the whole upload to one blip.
+    const CHUNK_RETRIES = 3;
+    const CHUNK_RETRY_BASE_MS = 1000; // backoff: 1s, 3s, 9s
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
     // In-progress uploads, keyed by a per-file token, for the status note.
     const activeUploads = new Map(); // token -> { name, pct }
     let uploadSeq = 0;
@@ -225,7 +231,7 @@
     videoEl.addEventListener('change', () => { prefillName(); checkFile(); });
     videoNameEl.addEventListener('input', updateSubmitState);
 
-    function badge(status) {
+    function badge(status, progress) {
       const b = document.createElement('span');
       b.className = `badge s-${status}`;
       if (status === 'transcoding') {
@@ -233,7 +239,9 @@
         s.className = 'spin';
         b.appendChild(s);
       }
-      b.appendChild(document.createTextNode(status));
+      // Long transcodes (multi-GB uploads) show how far along they are.
+      const label = status === 'transcoding' && progress != null ? `${status} · ${progress}%` : status;
+      b.appendChild(document.createTextNode(label));
       return b;
     }
 
@@ -255,7 +263,7 @@
         const title = document.createElement('div');
         title.className = 'title';
         title.textContent = it.name;
-        top.append(title, badge(it.status));
+        top.append(title, badge(it.status, it.progress));
         card.appendChild(top);
 
         const meta = document.createElement('div');
@@ -326,6 +334,28 @@
       return `server returned HTTP ${res.status}.`;
     }
 
+    // POST one chunk, retrying transient failures (network errors, 5xx, 429).
+    // 4xx responses are real errors — session expired (410), too large (413) —
+    // and fail immediately; retrying those can't succeed.
+    async function postChunkWithRetry(uploadId, chunk) {
+      for (let attempt = 0; ; attempt++) {
+        let res = null;
+        try {
+          res = await fetch(`/api/library/uploads/${encodeURIComponent(uploadId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: chunk,
+          });
+          if (res.ok) return;
+        } catch { /* network error — retryable */ }
+        const retryable = !res || res.status >= 500 || res.status === 429;
+        if (!retryable || attempt >= CHUNK_RETRIES) {
+          throw new Error(res ? await errorMessage(res) : 'network error while uploading a chunk');
+        }
+        await sleep(CHUNK_RETRY_BASE_MS * Math.pow(3, attempt));
+      }
+    }
+
     // Upload one file under the given display name, slicing it into chunks that
     // each stay under the proxy's per-request cap. The server reassembles them,
     // saves the video under `displayName`, then transcodes.
@@ -350,12 +380,7 @@
           let offset = 0;
           while (offset < file.size) {
             const end = Math.min(offset + size, file.size);
-            const res = await fetch(`/api/library/uploads/${encodeURIComponent(uploadId)}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/octet-stream' },
-              body: file.slice(offset, end),
-            });
-            if (!res.ok) throw new Error(await errorMessage(res));
+            await postChunkWithRetry(uploadId, file.slice(offset, end));
             offset = end;
             const u = activeUploads.get(token);
             if (u && file.size > 0) { u.pct = Math.round((offset / file.size) * 100); renderUploadNote(); }
