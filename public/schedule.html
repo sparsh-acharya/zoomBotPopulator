@@ -104,6 +104,11 @@
     .selected-list { display:grid; gap:6px; margin-top:-6px; }
     .selected-list .hint { font-size:12px; color:var(--muted); margin:2px 0 0; }
     .sel { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--body-strong); background:var(--canvas); border:1px solid var(--hairline); border-radius:var(--r-md); padding:7px 12px; }
+    .sel .grip { cursor:grab; color:var(--muted-soft); flex:none; font-size:13px; letter-spacing:-2px; user-select:none; }
+    .sel.dragging { opacity:0.45; }
+    /* Insertion indicator: a 2px primary line in the gap above/below the row */
+    .sel.drop-above { box-shadow:0 -7px 0 -5px var(--primary); }
+    .sel.drop-below { box-shadow:0 7px 0 -5px var(--primary); }
     .sel .num { font-family:var(--mono); font-size:11px; color:var(--muted); flex:none; }
     .sel .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .sel .sz { font-size:12px; color:var(--muted); flex:none; }
@@ -290,7 +295,19 @@
           : `${selectedVideos.length} videos selected — played in this order`;
     }
 
-    // The ordered playlist shown under the choose button, with remove buttons.
+    // Index of the row being dragged, or null when no drag is in flight.
+    let dragFrom = null;
+
+    // Move a selected video to a new position (drag-and-drop reorder).
+    function moveSelected(from, to) {
+      const [moved] = selectedVideos.splice(from, 1);
+      selectedVideos.splice(to, 0, moved);
+      renderSelected();
+      renderPickerList(currentPickerQuery()); // order badges follow the new order
+    }
+
+    // The ordered playlist shown under the choose button: drag rows to reorder,
+    // ✕ to remove.
     function renderSelected() {
       updateModalCount();
       selectedListEl.replaceChildren();
@@ -308,6 +325,11 @@
       selectedVideos.forEach((v, i) => {
         const row = document.createElement('div');
         row.className = 'sel';
+        row.draggable = true;
+        const grip = document.createElement('span');
+        grip.className = 'grip';
+        grip.textContent = '⋮⋮';
+        grip.setAttribute('aria-hidden', 'true');
         const num = document.createElement('span');
         num.className = 'num';
         num.textContent = String(i + 1);
@@ -324,13 +346,56 @@
         rm.setAttribute('aria-label', `Remove ${v.name}`);
         rm.textContent = '✕';
         rm.addEventListener('click', () => toggleVideo(v));
-        row.append(num, nm, sz, rm);
+        row.append(grip, num, nm, sz, rm);
+
+        // Drag to reorder. The row is only *moved* on drop; while dragging, an
+        // indicator line shows where it would land (above or below the row
+        // under the cursor, split at its vertical midpoint).
+        row.addEventListener('dragstart', (e) => {
+          dragFrom = i;
+          row.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'move';
+          try { e.dataTransfer.setData('text/plain', String(i)); } catch { /* IE quirk-guard */ }
+        });
+        row.addEventListener('dragend', () => {
+          dragFrom = null;
+          renderSelected(); // clears dragging/indicator classes on all rows
+        });
+        // Above/below is split at the row's vertical midpoint, from clientY —
+        // NOT e.offsetY, which is relative to whichever child span the cursor
+        // happens to be over.
+        const dropsBefore = (e) => {
+          const rect = row.getBoundingClientRect();
+          return e.clientY < rect.top + rect.height / 2;
+        };
+        row.addEventListener('dragover', (e) => {
+          if (dragFrom === null || dragFrom === i) return;
+          e.preventDefault(); // required to allow a drop
+          e.dataTransfer.dropEffect = 'move';
+          const before = dropsBefore(e);
+          row.classList.toggle('drop-above', before);
+          row.classList.toggle('drop-below', !before);
+        });
+        row.addEventListener('dragleave', () => {
+          row.classList.remove('drop-above', 'drop-below');
+        });
+        row.addEventListener('drop', (e) => {
+          if (dragFrom === null || dragFrom === i) return;
+          e.preventDefault();
+          const before = dropsBefore(e);
+          let to = i + (before ? 0 : 1);
+          if (dragFrom < to) to -= 1; // removing the source shifts targets down
+          const from = dragFrom;
+          dragFrom = null;
+          moveSelected(from, to);
+        });
+
         selectedListEl.appendChild(row);
       });
       if (selectedVideos.length > 1) {
         const hint = document.createElement('p');
         hint.className = 'hint';
-        hint.textContent = 'The bot plays these back to back, in this order.';
+        hint.textContent = 'The bot plays these back to back, in this order. Drag to reorder.';
         selectedListEl.appendChild(hint);
       }
     }
