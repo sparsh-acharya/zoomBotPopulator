@@ -63,7 +63,8 @@ export function onRemove(fn) {
  * @param {string} input.topic
  * @param {string} input.startTime - ISO8601
  * @param {number} input.durationMinutes
- * @param {string} input.videoUrl - server-relative URL to the uploaded video
+ * @param {string[]} input.videoUrls - server-relative video URLs, in play order
+ * @param {string[]} [input.videoNames] - display names matching videoUrls
  * @param {string} input.meetingNumber
  * @param {string} input.password
  * @param {string} input.joinUrl
@@ -77,7 +78,8 @@ export function schedule(input) {
     startTime: input.startTime,
     durationMinutes: input.durationMinutes,
     endBehavior: input.endBehavior || 'loop',
-    videoUrl: input.videoUrl,
+    videoUrls: input.videoUrls,
+    videoNames: input.videoNames || [],
     meetingNumber: input.meetingNumber,
     password: input.password,
     joinUrl: input.joinUrl,

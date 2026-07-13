@@ -98,8 +98,9 @@ const bots = new Map();
  * @param {number|null} config.leaveAfterMs - null = meeting-end mode
  * @param {string} config.botPageUrl - absolute http(s) URL to the bot page
  * @param {string} [config.zak] - host ZAK token; required to START a meeting
- * @param {string} [config.videoUrl] - server URL of the video to screen-share
- * @param {boolean} [config.screenShare] - presenter bot: play video as a share
+ * @param {string} [config.videoUrl] - server URL of a single video (legacy)
+ * @param {string[]} [config.videoUrls] - video URLs screen-shared back to back, in order
+ * @param {boolean} [config.screenShare] - presenter bot: play videos as a share
  * @returns {Promise<{ botId: string, status: string }>}
  */
 export async function launchBot(config) {
@@ -114,6 +115,7 @@ export async function launchBot(config) {
     botPageUrl,
     zak = '',
     videoUrl = '',
+    videoUrls = [],
     screenShare = false,
     endBehavior = 'loop',
   } = config;
@@ -171,7 +173,7 @@ export async function launchBot(config) {
       (cfg) => {
         window.__BOT_CONFIG__ = cfg;
       },
-      { signature, sdkKey, meetingNumber, password, userName, leaveAfterMs, zak, videoUrl, screenShare, endBehavior }
+      { signature, sdkKey, meetingNumber, password, userName, leaveAfterMs, zak, videoUrl, videoUrls, screenShare, endBehavior }
     );
 
     await page.goto(botPageUrl, { waitUntil: 'domcontentloaded' });

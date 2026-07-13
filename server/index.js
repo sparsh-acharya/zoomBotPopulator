@@ -461,8 +461,10 @@ app.delete('/api/library/:id', (req, res) => {
 });
 
 // ── POST /api/schedule ────────────────────────────────────────────────────────
-// JSON: { topic, startTime, durationMinutes, endBehavior, libraryId }. The video
-// is picked from the pre-uploaded, already-transcoded library — no upload here.
+// JSON: { topic, startTime, durationMinutes, endBehavior, libraryIds }. The
+// videos are picked from the pre-uploaded, already-transcoded library — no
+// upload here. `libraryIds` is an ordered array: the bot plays them back to
+// back in that order. A legacy single `libraryId` body still works.
 // Creates a Zoom meeting owned by the connected user and arms a job to start it.
 app.post('/api/schedule', async (req, res) => {
     try {
@@ -470,11 +472,19 @@ app.post('/api/schedule', async (req, res) => {
             return res.status(401).json({ error: 'Connect your Zoom account first' });
         }
 
-        // The chosen library video must exist and have finished transcoding.
-        const libraryId = String(req.body?.libraryId ?? '').trim();
-        const video = library.getReadyItem(libraryId);
-        if (!video) {
-            return res.status(400).json({ error: 'Select a ready video from your library' });
+        // Every chosen library video must exist and have finished transcoding.
+        const rawIds = Array.isArray(req.body?.libraryIds) ? req.body.libraryIds : [req.body?.libraryId];
+        const libraryIds = rawIds.map((id) => String(id ?? '').trim()).filter(Boolean);
+        if (!libraryIds.length) {
+            return res.status(400).json({ error: 'Select at least one ready video from your library' });
+        }
+        const videos = [];
+        for (const id of libraryIds) {
+            const video = library.getReadyItem(id);
+            if (!video) {
+                return res.status(400).json({ error: 'One of the selected videos is missing or not ready — pick ready videos from your library' });
+            }
+            videos.push(video);
         }
 
         const topic = String(req.body?.topic ?? '').trim() || 'Scheduled presentation';
@@ -505,8 +515,9 @@ app.post('/api/schedule', async (req, res) => {
             durationMinutes,
             endBehavior,
             // Library videos are shared and persistent — reference, never copy or
-            // delete. The /library/ prefix keeps onRemove from touching the file.
-            videoUrl: `/library/${video.webmFile}`,
+            // delete. The /library/ prefix keeps onRemove from touching the files.
+            videoUrls: videos.map((v) => `/library/${v.webmFile}`),
+            videoNames: videos.map((v) => v.name),
             meetingNumber: meeting.meetingNumber,
             password: meeting.password,
             joinUrl: meeting.joinUrl,
@@ -550,13 +561,16 @@ app.post('/api/schedule/:id/end', async (req, res) => {
 // Lets the scheduler prune a running job once its bot has left/ended.
 setBotStatusResolver(getBotStatus);
 
-// Delete a job's video whenever the job leaves the store (ended, canceled, or
+// Delete a job's videos whenever the job leaves the store (ended, canceled, or
 // pruned after the meeting finished) — but ONLY ephemeral /uploads/ files.
 // Library videos (/library/...) are shared and persistent, so they are left
 // alone even if several jobs referenced the same one.
 onRemove((job) => {
-    if (job.videoUrl?.startsWith('/uploads/')) {
-        deleteUploadFile(uploadPathFromUrl(job.videoUrl));
+    const urls = job.videoUrls || (job.videoUrl ? [job.videoUrl] : []);
+    for (const url of urls) {
+        if (url.startsWith('/uploads/')) {
+            deleteUploadFile(uploadPathFromUrl(url));
+        }
     }
 });
 
@@ -622,7 +636,7 @@ onFire(async (job) => {
         leaveAfterMs,
         botPageUrl: `http://localhost:${PORT}/host-bot.html`,
         zak,
-        videoUrl: job.videoUrl,
+        videoUrls: job.videoUrls,
         endBehavior: job.endBehavior,
         screenShare: true,
     });

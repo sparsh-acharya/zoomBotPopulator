@@ -99,7 +99,16 @@
     .btn-select:hover { border-color:var(--primary); }
     .btn-select .chev { color:var(--muted); flex:none; }
     .btn-select.chosen { border-style:solid; color:var(--ink); }
-    .selected-video { font-size:13px; margin-top:-6px; color:var(--success); display:flex; align-items:center; gap:7px; }
+
+    /* Ordered list of chosen videos (playback order) */
+    .selected-list { display:grid; gap:6px; margin-top:-6px; }
+    .selected-list .hint { font-size:12px; color:var(--muted); margin:2px 0 0; }
+    .sel { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--body-strong); background:var(--canvas); border:1px solid var(--hairline); border-radius:var(--r-md); padding:7px 12px; }
+    .sel .num { font-family:var(--mono); font-size:11px; color:var(--muted); flex:none; }
+    .sel .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .sel .sz { font-size:12px; color:var(--muted); flex:none; }
+    .sel .rm { background:none; border:0; color:var(--muted); cursor:pointer; font-size:13px; line-height:1; padding:3px 4px; flex:none; }
+    .sel .rm:hover { color:#ec9595; }
 
     /* Library picker modal */
     .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.55); display:none; align-items:center; justify-content:center; padding:24px; z-index:50; }
@@ -116,11 +125,16 @@
     .vid-list { display:grid; gap:10px; }
     .vid-item { display:flex; align-items:center; justify-content:space-between; gap:12px; background:var(--canvas); border:1px solid var(--hairline); border-radius:var(--r-md); padding:14px 16px; cursor:pointer; text-align:left; font-family:var(--sans); width:100%; }
     .vid-item:hover { border-color:var(--primary); background:var(--surface-cream-strong); }
+    .vid-item.selected { border-color:var(--primary); background:var(--surface-cream-strong); }
+    .vid-item.selected .chev { color:var(--primary); font-weight:600; }
     .vid-item .n { font-size:15px; font-weight:500; color:var(--ink); word-break:break-word; }
     .vid-item .m { font-size:12.5px; color:var(--muted); margin-top:3px; }
     .modal-empty { color:var(--muted); font-size:15px; text-align:center; padding:24px 8px; }
     .modal-empty a { color:var(--amber); text-decoration:none; }
     .modal-empty a:hover { text-decoration:underline; }
+    .modal-foot { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 22px; border-top:1px solid var(--hairline); }
+    .modal-count { font-size:13px; color:var(--muted); }
+    .modal-done { width:auto; height:38px; padding:0 20px; }
   </style>
 </head>
 <body>
@@ -146,7 +160,7 @@
     <section class="hero">
       <span class="eyebrow">Presenter bot</span>
       <h1>Schedule a meeting with a video.</h1>
-      <p>At the time you pick, a bot starts the meeting on your Zoom account and screen-shares your video for everyone who joins.</p>
+      <p>At the time you pick, a bot starts the meeting on your Zoom account and screen-shares your videos — back to back, in the order you choose — for everyone who joins.</p>
     </section>
 
     <div class="conn" id="conn">
@@ -169,21 +183,20 @@
               <input id="durationMinutes" type="number" min="1" value="30" />
             </label>
           </div>
-          <label>When the video ends
+          <label>When the last video ends
             <select id="endBehavior">
-              <option value="loop">Loop until the duration ends</option>
+              <option value="loop">Loop the playlist until the duration ends</option>
               <option value="hold">Play once, hold until the duration ends</option>
               <option value="end">End the meeting immediately</option>
             </select>
           </label>
-          <label>Presentation video
+          <label>Presentation videos
             <button type="button" class="btn-select" id="chooseVideoBtn">
               <span id="chooseVideoText">Choose from library…</span>
               <span class="chev">▾</span>
             </button>
           </label>
-          <div id="selectedVideo" class="selected-video" hidden></div>
-          <input type="hidden" id="libraryId" />
+          <div id="selectedVideos" class="selected-list" hidden></div>
           <button type="submit" class="btn-primary" id="submitBtn">Schedule presentation</button>
         </form>
       </section>
@@ -195,15 +208,20 @@
     </div>
   </div>
 
-  <!-- Library picker: pops up on "Choose from library…" -->
+  <!-- Library picker: pops up on "Choose from library…". Click videos in the
+       order they should play; click again to remove one from the playlist. -->
   <div class="modal-overlay" id="videoModal">
-    <div class="modal" role="dialog" aria-modal="true" aria-label="Choose a video">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Choose videos">
       <div class="modal-head">
-        <h3>Choose a video</h3>
+        <h3>Choose videos</h3>
         <button type="button" class="modal-close" id="modalClose" aria-label="Close">✕</button>
       </div>
       <div class="modal-body" id="modalBody">
         <p class="modal-empty">Loading…</p>
+      </div>
+      <div class="modal-foot">
+        <span class="modal-count" id="modalCount">No videos selected</span>
+        <button type="button" class="btn-primary modal-done" id="modalDone">Done</button>
       </div>
     </div>
   </div>
@@ -218,11 +236,12 @@
     const jobsEl = document.getElementById('jobs');
     const chooseVideoBtn = document.getElementById('chooseVideoBtn');
     const chooseVideoText = document.getElementById('chooseVideoText');
-    const selectedVideoEl = document.getElementById('selectedVideo');
-    const libraryIdEl = document.getElementById('libraryId');
+    const selectedListEl = document.getElementById('selectedVideos');
     const videoModal = document.getElementById('videoModal');
     const modalClose = document.getElementById('modalClose');
     const modalBody = document.getElementById('modalBody');
+    const modalCount = document.getElementById('modalCount');
+    const modalDone = document.getElementById('modalDone');
 
     let connected = false;
 
@@ -235,19 +254,85 @@
     }
 
     function updateSubmitState() {
-      submitBtn.disabled = !connected || !libraryIdEl.value;
+      submitBtn.disabled = !connected || !selectedVideos.length;
     }
 
     // ── Library picker ──────────────────────────────────────────────────────────
-    // The video comes from the pre-uploaded, already-transcoded library — no
-    // device upload here. Only 'ready' items are selectable.
-    function selectVideo(item) {
-      libraryIdEl.value = item.id;
-      chooseVideoText.textContent = item.name;
-      chooseVideoBtn.classList.add('chosen');
-      selectedVideoEl.hidden = false;
-      selectedVideoEl.textContent = `✓ ${item.name} · ${formatBytes(item.sizeBytes)}`;
+    // Videos come from the pre-uploaded, already-transcoded library — no device
+    // upload here. Only 'ready' items are selectable. More than one can be
+    // picked: the bot plays them back to back in the order they were selected.
+    let selectedVideos = []; // ordered [{ id, name, sizeBytes }]
+
+    function selectionIndex(id) {
+      return selectedVideos.findIndex((v) => v.id === id);
+    }
+
+    // Click to add at the end of the playlist; click again to remove.
+    function toggleVideo(item) {
+      const idx = selectionIndex(item.id);
+      if (idx >= 0) selectedVideos.splice(idx, 1);
+      else selectedVideos.push(item);
+      renderSelected();
+      renderPickerList(currentPickerQuery()); // refresh the order badges
       updateSubmitState();
+    }
+
+    function currentPickerQuery() {
+      const search = modalBody.querySelector('.vid-search');
+      return search ? search.value : '';
+    }
+
+    function updateModalCount() {
+      modalCount.textContent = !selectedVideos.length
+        ? 'No videos selected'
+        : selectedVideos.length === 1
+          ? '1 video selected'
+          : `${selectedVideos.length} videos selected — played in this order`;
+    }
+
+    // The ordered playlist shown under the choose button, with remove buttons.
+    function renderSelected() {
+      updateModalCount();
+      selectedListEl.replaceChildren();
+      if (!selectedVideos.length) {
+        chooseVideoText.textContent = 'Choose from library…';
+        chooseVideoBtn.classList.remove('chosen');
+        selectedListEl.hidden = true;
+        return;
+      }
+      chooseVideoText.textContent = selectedVideos.length === 1
+        ? selectedVideos[0].name
+        : `${selectedVideos.length} videos selected`;
+      chooseVideoBtn.classList.add('chosen');
+      selectedListEl.hidden = false;
+      selectedVideos.forEach((v, i) => {
+        const row = document.createElement('div');
+        row.className = 'sel';
+        const num = document.createElement('span');
+        num.className = 'num';
+        num.textContent = String(i + 1);
+        const nm = document.createElement('span');
+        nm.className = 'nm';
+        nm.textContent = v.name;
+        nm.title = v.name;
+        const sz = document.createElement('span');
+        sz.className = 'sz';
+        sz.textContent = formatBytes(v.sizeBytes);
+        const rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'rm';
+        rm.setAttribute('aria-label', `Remove ${v.name}`);
+        rm.textContent = '✕';
+        rm.addEventListener('click', () => toggleVideo(v));
+        row.append(num, nm, sz, rm);
+        selectedListEl.appendChild(row);
+      });
+      if (selectedVideos.length > 1) {
+        const hint = document.createElement('p');
+        hint.className = 'hint';
+        hint.textContent = 'The bot plays these back to back, in this order.';
+        selectedListEl.appendChild(hint);
+      }
     }
 
     function modalMessage(text, html) {
@@ -264,6 +349,8 @@
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'vid-item';
+      const order = selectionIndex(it.id);
+      if (order >= 0) btn.classList.add('selected');
       const info = document.createElement('div');
       const n = document.createElement('div');
       n.className = 'n';
@@ -274,9 +361,9 @@
       info.append(n, m);
       const pick = document.createElement('span');
       pick.className = 'chev';
-      pick.textContent = 'Select';
+      pick.textContent = order >= 0 ? `✓ ${order + 1}` : 'Add';
       btn.append(info, pick);
-      btn.addEventListener('click', () => { selectVideo(it); closeModal(); });
+      btn.addEventListener('click', () => toggleVideo(it));
       return btn;
     }
 
@@ -323,6 +410,7 @@
 
     async function openModal() {
       videoModal.classList.add('open');
+      updateModalCount();
       modalMessage('Loading…');
       try {
         buildPicker(await (await fetch('/api/library')).json());
@@ -334,6 +422,7 @@
 
     chooseVideoBtn.addEventListener('click', openModal);
     modalClose.addEventListener('click', closeModal);
+    modalDone.addEventListener('click', closeModal);
     videoModal.addEventListener('click', (e) => { if (e.target === videoModal) closeModal(); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
 
@@ -402,12 +491,14 @@
         card.appendChild(top);
 
         const END_LABELS = { loop: 'Loops till end', hold: 'Holds till end', end: 'Ends with clip' };
+        const videoCount = j.videoNames?.length || (j.videoUrls || (j.videoUrl ? [j.videoUrl] : [])).length;
         const meta = document.createElement('div');
         meta.className = 'meta';
         meta.append(
           field('Starts', new Date(j.startTime).toLocaleString()),
           field('Duration', `${j.durationMinutes} min`),
           field('Meeting ID', j.meetingNumber),
+          field('Videos', j.videoNames?.length ? j.videoNames.join(', ') : String(videoCount || '—')),
           field('On clip end', END_LABELS[j.endBehavior] || j.endBehavior || '—'),
         );
         card.appendChild(meta);
@@ -509,11 +600,8 @@
     }
 
     function resetVideoSelection() {
-      libraryIdEl.value = '';
-      chooseVideoText.textContent = 'Choose from library…';
-      chooseVideoBtn.classList.remove('chosen');
-      selectedVideoEl.hidden = true;
-      selectedVideoEl.textContent = '';
+      selectedVideos = [];
+      renderSelected();
     }
 
     // Read a failed response without assuming JSON — a proxy (nginx/Cloudflare)
@@ -533,16 +621,15 @@
       e.preventDefault();
       if (!connected) { alert('Connect your Zoom account first.'); return; }
       const startTime = document.getElementById('startTime').value;
-      const libraryId = libraryIdEl.value;
       if (!startTime) { alert('Pick a start time.'); return; }
-      if (!libraryId) { alert('Choose a video from your library.'); return; }
+      if (!selectedVideos.length) { alert('Choose at least one video from your library.'); return; }
 
       const payload = {
         topic: document.getElementById('topic').value.trim(),
         startTime,
         durationMinutes: Number(document.getElementById('durationMinutes').value || '30'),
         endBehavior: document.getElementById('endBehavior').value,
-        libraryId,
+        libraryIds: selectedVideos.map((v) => v.id), // playback order
       };
 
       submitBtn.disabled = true;

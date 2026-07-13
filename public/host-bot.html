@@ -7,10 +7,11 @@
   <style>
     html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
 
-    /* The video the bot screen-shares. It fills the viewport so that when the
-       SDK shares "Entire screen" (the headless/Xvfb viewport), the captured
-       pixels ARE this video. */
-    #clip {
+    /* The videos the bot screen-shares. Two stacked players fill the viewport
+       so that when the SDK shares this tab, the captured pixels ARE the video.
+       While one plays, the next playlist clip preloads in the hidden one; on
+       'ended' the .front class swaps, so clips hand over without a load gap. */
+    .clip {
       position: fixed;
       inset: 0;
       width: 100vw;
@@ -19,6 +20,7 @@
       background: #000;
       z-index: 1;
     }
+    .clip.front { z-index: 2; }
 
     /* The SDK toolbar must render so the bot can click "Share", but nobody
        watches it — push it off-screen. Never display:none (breaks SDK media). */
@@ -34,7 +36,8 @@
   </style>
 </head>
 <body>
-  <video id="clip" autoplay playsinline></video>
+  <video id="clipA" class="clip front" playsinline preload="auto"></video>
+  <video id="clipB" class="clip" playsinline preload="auto"></video>
   <div id="meetingSDKElement"></div>
 
   <script type="module">
@@ -199,49 +202,109 @@
       return false;
     }
 
-    async function startPresentation(videoUrl, endBehavior) {
-      const video = document.getElementById('clip');
-      // What to do when the clip finishes:
-      //   loop → replay forever (a leaveAfterMs timer ends the meeting)
-      //   hold → freeze on the last frame until the leaveAfterMs timer fires
-      //   end  → end the meeting now
-      if (endBehavior === 'loop') {
-        video.loop = true;
-        console.log('[HostBot] Clip set to loop until duration');
-      } else {
-        video.addEventListener('ended', () => {
+    // Surface the REAL media failure. A play() rejection is usually NOT an
+    // autoplay-policy block (we launch with no-user-gesture autoplay) but a
+    // load/decode error: video.error.code 4 = SRC_NOT_SUPPORTED (unplayable
+    // codec — e.g. H.264 in Playwright's bundled Chromium) vs a 404 on the src.
+    const MEDIA_ERR = { 1: 'ABORTED', 2: 'NETWORK', 3: 'DECODE', 4: 'SRC_NOT_SUPPORTED' };
+    function logMediaErrors(video) {
+      video.addEventListener('error', async () => {
+        const src = video.currentSrc || video.src;
+        const code = video.error?.code;
+        let httpStatus = '?';
+        try { httpStatus = (await fetch(src, { method: 'HEAD' })).status; } catch (_) {}
+        console.error(
+          `[HostBot] clip failed to load: video.error=${code} (${MEDIA_ERR[code] || 'unknown'}), ` +
+          `HTTP ${httpStatus}, src=${src}`
+        );
+      });
+    }
+
+    async function playClip(video, url, label) {
+      video.src = url;
+      try {
+        await video.play();
+      } catch (e) {
+        console.warn(`[HostBot] video.play() rejected (${label}): ${e?.name || ''} ${e?.message || e}`.trim());
+      }
+    }
+
+    // Play the clips back to back, in order. Two stacked <video> elements are
+    // double-buffered: while one plays, the next clip preloads in the hidden
+    // one; on 'ended' we swap which is in front and play immediately, so the
+    // playlist advances without a load gap in the share. When the LAST clip
+    // finishes, endBehavior applies to the whole playlist:
+    //   loop → start over from the first clip (a leaveAfterMs timer ends the meeting)
+    //   hold → freeze on the last frame until the leaveAfterMs timer fires
+    //   end  → end the meeting now
+    async function startPresentation(videoUrls, endBehavior) {
+      const urls = (videoUrls || []).filter(Boolean);
+      // players[0] is the visible (front) element, players[1] the preload buffer.
+      let players = [document.getElementById('clipA'), document.getElementById('clipB')];
+      players.forEach(logMediaErrors);
+
+      if (!urls.length) {
+        console.warn('[HostBot] No videos provided — nothing to present');
+        await startScreenShare();
+        return;
+      }
+
+      // Which clip follows urls[i]; -1 = playlist over.
+      const nextIndex = (i) => (i + 1 < urls.length ? i + 1 : endBehavior === 'loop' ? 0 : -1);
+
+      // A single looping clip uses the native loop attribute — gapless, no swaps.
+      if (urls.length === 1 && endBehavior === 'loop') {
+        players[0].loop = true;
+        console.log('[HostBot] Single clip set to loop until duration');
+        await playClip(players[0], urls[0], 'clip 1/1');
+        await startScreenShare();
+        return;
+      }
+
+      let playing = 0; // urls index currently on the front element
+
+      const preloadNext = () => {
+        const n = nextIndex(playing);
+        if (n === -1) return;
+        players[1].src = urls[n];
+        players[1].load(); // guarantee a reset even if src is unchanged
+      };
+
+      const onEnded = async (ev) => {
+        if (ev.target !== players[0]) return; // stale event from the back buffer
+        const n = nextIndex(playing);
+        if (n === -1) {
           if (endBehavior === 'end') {
-            console.log('[HostBot] Clip ended — ending meeting');
+            console.log('[HostBot] Playlist finished — ending meeting');
             setTimeout(() => leave('left-meeting-ended'), END_TAIL_MS);
           } else {
-            console.log('[HostBot] Clip ended — holding until duration');
+            console.log('[HostBot] Playlist finished — holding until duration');
           }
-        });
-      }
-      if (videoUrl) {
-        // Surface the REAL media failure. A play() rejection here is usually NOT
-        // an autoplay-policy block (we launch with no-user-gesture autoplay) but
-        // a load/decode error: video.error.code 4 = SRC_NOT_SUPPORTED (unplayable
-        // codec — e.g. H.264 in Playwright's bundled Chromium) vs a 404 on the src.
-        const MEDIA_ERR = { 1: 'ABORTED', 2: 'NETWORK', 3: 'DECODE', 4: 'SRC_NOT_SUPPORTED' };
-        video.addEventListener('error', async () => {
-          const code = video.error?.code;
-          let httpStatus = '?';
-          try { httpStatus = (await fetch(videoUrl, { method: 'HEAD' })).status; } catch (_) {}
-          console.error(
-            `[HostBot] clip failed to load: video.error=${code} (${MEDIA_ERR[code] || 'unknown'}), ` +
-            `HTTP ${httpStatus}, src=${videoUrl}`
-          );
-        });
-        video.src = videoUrl;
-        try {
-          await video.play();
-        } catch (e) {
-          console.warn(`[HostBot] video.play() rejected: ${e?.name || ''} ${e?.message || e}`.trim());
+          return;
         }
-      } else {
-        console.warn('[HostBot] No videoUrl provided — nothing to present');
-      }
+        // Swap the buffers: the back element already holds urls[n] buffered.
+        const next = players[1];
+        const prev = players[0];
+        players = [next, prev];
+        playing = n;
+        console.log(`[HostBot] Advancing to clip ${n + 1}/${urls.length}`);
+        try {
+          await next.play();
+        } catch (e) {
+          console.warn(`[HostBot] video.play() rejected (clip ${n + 1}/${urls.length}): ${e?.name || ''} ${e?.message || e}`.trim());
+        }
+        next.classList.add('front');
+        prev.classList.remove('front');
+        prev.pause();
+        preloadNext();
+      };
+
+      players[0].addEventListener('ended', onEnded);
+      players[1].addEventListener('ended', onEnded);
+
+      console.log(`[HostBot] Playlist: ${urls.length} clip(s), endBehavior=${endBehavior}`);
+      await playClip(players[0], urls[0], `clip 1/${urls.length}`);
+      preloadNext();
       await startScreenShare();
     }
 
@@ -253,7 +316,9 @@
         return;
       }
 
-      const { signature, meetingNumber, password, userName, leaveAfterMs, zak, videoUrl, endBehavior } = config;
+      const { signature, meetingNumber, password, userName, leaveAfterMs, zak, videoUrl, videoUrls, endBehavior } = config;
+      // Prefer the ordered playlist; fall back to the legacy single videoUrl.
+      const playlist = Array.isArray(videoUrls) && videoUrls.length ? videoUrls : videoUrl ? [videoUrl] : [];
 
       console.log(
         `[HostBot] crossOriginIsolated=${self.crossOriginIsolated} SAB=${typeof SharedArrayBuffer !== 'undefined'}`
@@ -323,9 +388,9 @@
           setTimeout(() => leave('left-timer'), leaveAfterMs);
         }
 
-        // Kick off the presentation (play clip + share) in the background so the
-        // join status is reported promptly.
-        startPresentation(videoUrl, endBehavior || 'loop');
+        // Kick off the presentation (play clips + share) in the background so
+        // the join status is reported promptly.
+        startPresentation(playlist, endBehavior || 'loop');
       } catch (err) {
         const code = err?.errorCode != null ? ` [errorCode=${err.errorCode}]` : '';
         console.error('[HostBot] Error:', (err?.reason || err?.message || err) + code);
